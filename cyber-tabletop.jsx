@@ -260,7 +260,7 @@ const FontStyle = () => (
       flex: 1; min-width: 90px; position: relative;
       padding: 10px 16px 10px 28px;
       background: #0d1621; border: 1px solid #1a2a3a;
-      font-size: 11px; color: #4a6fa5; cursor: pointer; white-space: nowrap;
+      font-size: 11px; color: #4a6fa5; white-space: nowrap;
     }
     .phase-item:first-child { border-radius: 6px 0 0 6px; padding-left: 16px; }
     .phase-item:last-child { border-radius: 0 6px 6px 0; }
@@ -420,6 +420,11 @@ const FontStyle = () => (
     }
     .msg-action-btn:hover { border-color: #ca8a04; color: #fbbf24; background: rgba(202,138,4,0.08); }
     .msg-action-btn.options-btn:hover { border-color: #60a5fa; color: #93c5fd; background: rgba(29,78,216,0.1); }
+    .msg-action-btn.advance-btn {
+      border-color: rgba(34,197,94,0.4); color: #4ade80;
+      background: rgba(22,163,74,0.08);
+    }
+    .msg-action-btn.advance-btn:hover { border-color: #22c55e; color: #86efac; background: rgba(22,163,74,0.15); }
     /* Multiple choice option buttons */
     .mc-options { display: flex; flex-direction: column; gap: 8px; }
     .mc-option {
@@ -457,6 +462,58 @@ const FontStyle = () => (
     .skeleton-line-full { width: 100%; }
     .skeleton-block { height: 48px; border-radius: 6px; margin-bottom: 8px; }
     .skeleton-title { height: 10px; width: 120px; margin-bottom: 14px; }
+
+    /* Landing page */
+    .landing {
+      min-height: calc(100vh - 56px);
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      padding: 48px 24px; text-align: center;
+      background: radial-gradient(ellipse at 50% 0%, rgba(29,78,216,0.12) 0%, transparent 65%);
+    }
+    .landing-logo {
+      width: 72px; height: 72px;
+      background: linear-gradient(135deg, #0d6efd, #00d4ff);
+      border-radius: 16px; display: flex; align-items: center;
+      justify-content: center; font-size: 36px;
+      margin: 0 auto 28px; box-shadow: 0 0 40px rgba(13,110,253,0.35);
+    }
+    .landing-wordmark {
+      font-family: 'Share Tech Mono', monospace; font-size: 36px;
+      letter-spacing: 0.12em; color: #e0eaff; margin-bottom: 6px;
+    }
+    .landing-tagline {
+      font-size: 16px; color: #4a6fa5; margin-bottom: 12px;
+      font-weight: 400; max-width: 480px; line-height: 1.5;
+    }
+    .landing-description {
+      font-size: 14px; color: #3a5570; max-width: 520px;
+      line-height: 1.75; margin-bottom: 40px;
+    }
+    .landing-features {
+      display: flex; gap: 12px; justify-content: center;
+      flex-wrap: wrap; margin-bottom: 48px; max-width: 640px;
+    }
+    .landing-feature {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 14px; border-radius: 20px;
+      background: rgba(255,255,255,0.03); border: 1px solid #1a2a3a;
+      font-size: 12px; color: #4a6a8a; white-space: nowrap;
+    }
+    .landing-feature-icon { font-size: 14px; }
+    .landing-divider {
+      width: 1px; height: 48px; background: linear-gradient(to bottom, transparent, #1a2a3a, transparent);
+      margin: 0 auto 48px;
+    }
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(16px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .fade-up { animation: fadeUp 0.5s ease forwards; }
+    .fade-up-delay-1 { animation-delay: 0.1s; opacity: 0; }
+    .fade-up-delay-2 { animation-delay: 0.2s; opacity: 0; }
+    .fade-up-delay-3 { animation-delay: 0.35s; opacity: 0; }
+    .fade-up-delay-4 { animation-delay: 0.5s; opacity: 0; }
 
     /* Voice waveform animation */
     .wave-bar {
@@ -814,11 +871,12 @@ CORE BEHAVIOR:
 - Never volunteer the right answer. Never ask "have you considered X?" unless they have explicitly asked for a hint.
 - Keep responses under 150 words unless delivering a major scenario development.
 - End EVERY response with a single short line on its own that invites action — e.g. "What is your team's next action?" or "How does your team respond?" or "The clock is ticking — what do you do?" Vary the phrasing; never repeat the same closing line twice in a row.
+- When the team has sufficiently addressed the key objectives of the current phase — demonstrated sound decision-making, covered the critical steps, and shown readiness to move forward — append the exact marker [ADVANCE_PHASE] on its own line at the very end of your response (after the closing action question). Do not append it prematurely; only when the phase is genuinely complete. Do not explain or mention the marker — the app handles it silently.
 
 HINT MODE:
 - If a participant explicitly asks for a hint, help, direction, or says they are stuck, briefly shift into hint mode: acknowledge the request, then offer one directional nudge grounded in ${playbook.name} — not the answer, just a pointer toward the right area of thinking. Return to observer mode immediately after.
 - Example hint format: "Your ${playbook.name} playbook's ${phase} guidance focuses on [area] — has the team addressed that yet?"
-- If a participant asks for multiple choice options, respond with a single short sentence acknowledging the request (e.g. "Here are your options — choose your team's next action." or "Select the action your team will take."), then immediately follow with the option lines and nothing else. Include 4 options total: 2-3 that are appropriate for the current phase, and 1-2 that are plausible-sounding but either belong to a different phase, are premature, or are common actions in other incident types. Do not indicate which options are correct. Format each option on its own line exactly like this:
+- If a participant asks for multiple choice options, respond with a single short sentence acknowledging the request (e.g. "Here are your options — choose your team's next action." or "Select the action your team will take."), then immediately follow with the option lines and nothing else. Include 4 options total: 2-3 that are appropriate for the current phase, and 1-2 that are plausible-sounding but either belong to a different phase, are premature, or are common actions in other incident types. Do not indicate which options are correct. Do NOT write the options as plain text, numbered lists, or lettered lists anywhere in your response — ONLY use the [OPTION_X] format below, as the app renders these as buttons and any plain-text repetition will be shown to the user as duplicate content. Format each option on its own line exactly like this:
   [OPTION_A] Brief action description
   [OPTION_B] Brief action description
   [OPTION_C] Brief action description
@@ -830,8 +888,66 @@ Difficulty: ${diffMap[config.difficulty]}.
 Pacing: ${probMap[config.probing]}.${focus}${custom}`;
 }
 
+// ── Landing Page ──────────────────────────────────────────────
+function LandingPage({ onBegin }) {
+  return (
+    <div className="landing">
+      {/* Logo */}
+      <div className="landing-logo fade-up">🛡</div>
+
+      {/* Wordmark + tagline */}
+      <div className="landing-wordmark fade-up fade-up-delay-1">TACTICIAN</div>
+      <div className="landing-tagline fade-up fade-up-delay-1">
+        AI-Powered Cybersecurity Tabletop Exercise Platform
+      </div>
+
+      {/* Description */}
+      <div className="landing-description fade-up fade-up-delay-2">
+        Run realistic incident response drills against industry-standard playbooks
+        or your own. An AI facilitator sets the scene, adapts to your team's
+        decisions, and generates a structured after-action report when you're done.
+      </div>
+
+      {/* Feature pills */}
+      <div className="landing-features fade-up fade-up-delay-3">
+        {[
+          ["🔒", "6 Scenario Types"],
+          ["📋", "CISA & NIST Playbooks"],
+          ["🤖", "AI Facilitation"],
+          ["⚡", "Live Injects"],
+          ["💡", "Adaptive Hints"],
+          ["📊", "After-Action Reports"],
+        ].map(([icon, label]) => (
+          <div key={label} className="landing-feature">
+            <span className="landing-feature-icon">{icon}</span>
+            {label}
+          </div>
+        ))}
+      </div>
+
+      {/* CTA */}
+      <div className="fade-up fade-up-delay-4">
+        <button
+          className="btn btn-primary"
+          onClick={onBegin}
+          style={{
+            fontSize: 15, padding: "13px 36px", borderRadius: 8,
+            boxShadow: "0 0 24px rgba(29,78,216,0.4)",
+            letterSpacing: "0.03em",
+          }}
+        >
+          Begin Exercise →
+        </button>
+        <div style={{ marginTop: 14, fontSize: 11, color: "#2a4060", fontFamily: "'Share Tech Mono', monospace", letterSpacing: "0.06em" }}>
+          POWERED BY CLAUDE · ANTHROPIC
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Setup Flow ────────────────────────────────────────────────
-function ParticipantSetup({ onStart }) {
+function ParticipantSetup({ onStart, lastPlayed }) {
   const [step, setStep] = useState(0);
   const [selected, setSelected] = useState({
     scenario: null, playbook: null,
@@ -895,10 +1011,29 @@ function ParticipantSetup({ onStart }) {
               <div key={sc.id} className={`scenario-card${selected.scenario?.id === sc.id ? " selected" : ""}`} onClick={() => selectScenario(sc)}>
                 <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
                   <span className="scenario-icon">{sc.icon}</span>
-                  <span className={`badge badge-severity-${sc.severity}`}>{sc.severity}</span>
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 5 }}>
+                    <span className={`badge badge-severity-${sc.severity}`}>{sc.severity}</span>
+                    {lastPlayed?.scenarioId === sc.id && (
+                      <span style={{
+                        fontSize: 10, fontFamily: "'Share Tech Mono', monospace",
+                        padding: "2px 7px", borderRadius: 3,
+                        background: "rgba(124,58,237,0.15)", color: "#a78bfa",
+                        border: "1px solid rgba(124,58,237,0.3)",
+                        whiteSpace: "nowrap",
+                      }}>
+                        ↺ Last played
+                      </span>
+                    )}
+                  </div>
                 </div>
                 <div className="scenario-name">{sc.name}</div>
                 <div className="scenario-desc">{sc.description}</div>
+                {lastPlayed?.scenarioId === sc.id && (
+                  <div style={{ fontSize: 11, color: "#5a4a7a", fontFamily: "'Share Tech Mono', monospace" }}>
+                    {new Date(lastPlayed.completedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                    {lastPlayed.playbookName ? ` · ${lastPlayed.playbookName}` : ""}
+                  </div>
+                )}
                 <div className="scenario-tags">{sc.tags.map(t => <span key={t} className="tag">{t}</span>)}</div>
               </div>
             ))}
@@ -1130,12 +1265,21 @@ function parseOptions(text) {
   return matches.map(m => ({ label: m[1], text: m[2].trim() }));
 }
 
-// Strip [OPTION_X] lines from displayed text
+// Strip [OPTION_X] lines from displayed text, and catch any plain-text
+// lettered list items Claude may produce as a fallback (A: ..., B: ..., etc.)
 function stripOptions(text) {
-  return text.replace(/\[OPTION_[A-D]\].+/g, "").replace(/\n{3,}/g, "\n\n").trim();
+  return text
+    .replace(/\[OPTION_[A-D]\].+/g, "")
+    .replace(/^[A-D][.):\s]\s*.{10,}/gm, "")  // catches "A. ...", "A: ...", "A) ..."
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
-function AIChat({ scenario, phase, messages, onMessage, loading }) {
+// Detect and strip [ADVANCE_PHASE] marker from an AI message
+function hasAdvancePhase(text) { return /\[ADVANCE_PHASE\]/i.test(text); }
+function stripAdvancePhase(text) { return text.replace(/\[ADVANCE_PHASE\]/gi, "").replace(/\n{3,}/g, "\n\n").trim(); }
+
+function AIChat({ scenario, phase, messages, onMessage, loading, onAdvancePhase, isLastPhase }) {
   const [input, setInput] = useState("");
   const [hintState, setHintState] = useState("none");
   const [selectedOption, setSelectedOption] = useState(null);
@@ -1152,6 +1296,9 @@ function AIChat({ scenario, phase, messages, onMessage, loading }) {
   const showOptions = currentOptions.length > 0;
   const bothUnlocked = hintState === "both-unlocked" ||
     (hintState === "options-used" && isLastAI && currentOptions.length === 0);
+
+  // Detect [ADVANCE_PHASE] marker in the last AI message
+  const advanceSuggested = isLastAI && !isLastPhase && hasAdvancePhase(lastMsg.text);
 
   // When a new AI message arrives, scroll its top into view inside the chat area
   useEffect(() => {
@@ -1213,8 +1360,9 @@ function AIChat({ scenario, phase, messages, onMessage, loading }) {
       <div className="chat-area" ref={chatAreaRef}>
         {messages.map((m, i) => {
           const isThisLastAI = m.role === "ai" && i === messages.length - 1;
-          const displayText = (isThisLastAI && hintState === "options-used")
-            ? stripOptions(m.text)
+          // Strip [OPTION_X] and [ADVANCE_PHASE] markers from every AI message
+          const displayText = m.role === "ai"
+            ? stripAdvancePhase(stripOptions(m.text))
             : m.text;
           return (
             <div key={i} className="chat-msg" ref={isThisLastAI ? lastAiMsgRef : null}>
@@ -1245,10 +1393,9 @@ function AIChat({ scenario, phase, messages, onMessage, loading }) {
         )}
       </div>
 
-      {/* Hint / options action buttons */}
+      {/* Hint / options / advance action buttons */}
       {isLastAI && !loading && !showOptions && (
         <div className="msg-actions" style={{ padding: "8px 0 0" }}>
-          {/* Both buttons visible once user has used options at least once */}
           {(hintState === "none" || bothUnlocked) && (
             <button className="msg-action-btn" onClick={handleHint}
               title="Ask the facilitator for a directional nudge without giving away the answer">
@@ -1259,6 +1406,12 @@ function AIChat({ scenario, phase, messages, onMessage, loading }) {
             <button className="msg-action-btn options-btn" onClick={handleOptions}
               title="Ask the facilitator to present multiple choice options">
               🔀 Still stuck? Ask for options
+            </button>
+          )}
+          {advanceSuggested && (
+            <button className="msg-action-btn advance-btn" onClick={onAdvancePhase}
+              title="The AI facilitator suggests the team is ready to move to the next phase">
+              ✅ Advance to next phase
             </button>
           )}
         </div>
@@ -1856,7 +2009,7 @@ Return this exact JSON shape with no other text:
 }
 
 // ── Confirm Modal ─────────────────────────────────────────────
-function ConfirmModal({ icon, title, body, confirmLabel, confirmStyle, onConfirm, onCancel }) {
+function ConfirmModal({ icon, title, body, confirmLabel, confirmStyle, cancelLabel = "Keep Going", onConfirm, onCancel }) {
   // Close on backdrop click
   const handleBackdrop = (e) => { if (e.target === e.currentTarget) onCancel(); };
   // Close on Escape key
@@ -1873,7 +2026,7 @@ function ConfirmModal({ icon, title, body, confirmLabel, confirmStyle, onConfirm
         <div className="modal-title">{title}</div>
         <div className="modal-body">{body}</div>
         <div className="modal-actions">
-          <button className="btn btn-ghost" onClick={onCancel}>Keep Going</button>
+          <button className="btn btn-ghost" onClick={onCancel}>{cancelLabel}</button>
           <button
             className="btn"
             style={confirmStyle}
@@ -1883,6 +2036,122 @@ function ConfirmModal({ icon, title, body, confirmLabel, confirmStyle, onConfirm
       </div>
     </div>
   );
+}
+
+// ── Storage key helper ────────────────────────────────────────
+const storageKey = (session) =>
+  `tactician:${session.sessionName}:${session.scenario.id}`.replace(/\s+/g, "_").slice(0, 120);
+
+const LAST_PLAYED_KEY = "tactician:lastPlayed";
+
+const lastPlayedStorage = {
+  save(scenario, playbook, sessionName) {
+    try {
+      localStorage.setItem(LAST_PLAYED_KEY, JSON.stringify({
+        scenarioId: scenario.id,
+        scenarioName: scenario.name,
+        scenarioIcon: scenario.icon,
+        scenarioSeverity: scenario.severity,
+        playbookName: playbook.name,
+        sessionName,
+        completedAt: new Date().toISOString(),
+      }));
+    } catch { /* silent */ }
+  },
+  load() {
+    try {
+      const raw = localStorage.getItem(LAST_PLAYED_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
+  },
+};
+
+// ── localStorage chat persistence hook ───────────────────────
+function useChatStorage(session) {
+  const key = storageKey(session);
+
+  const load = () => {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return null;
+      return JSON.parse(raw); // { messages, timeline, phaseIdx, savedAt }
+    } catch { return null; }
+  };
+
+  const save = (messages, timeline, phaseIdx, session) => {
+    try {
+      localStorage.setItem(key, JSON.stringify({
+        messages, timeline, phaseIdx,
+        // Persist enough session metadata to reconstruct on resume
+        sessionName: session?.sessionName,
+        playbook: session?.playbook,
+        participants: session?.participants,
+        facilitatorConfig: session?.facilitatorConfig,
+        savedAt: new Date().toISOString(),
+      }));
+    } catch (e) {
+      // Quota exceeded — prune oldest messages and retry once
+      if (e.name === "QuotaExceededError") {
+        try {
+          const trimmed = messages.slice(-30);
+          localStorage.setItem(key, JSON.stringify({
+            messages: trimmed, timeline, phaseIdx,
+            sessionName: session?.sessionName,
+            playbook: session?.playbook,
+            participants: session?.participants,
+            facilitatorConfig: session?.facilitatorConfig,
+            savedAt: new Date().toISOString(),
+          }));
+        } catch { /* silent */ }
+      }
+    }
+  };
+
+  const clear = () => { try { localStorage.removeItem(key); } catch { /* silent */ } };
+
+  return { load, save, clear };
+}
+
+// ── Context summarizer ────────────────────────────────────────
+// When the message array sent to Claude grows past SUMMARIZE_AFTER exchanges,
+// the oldest SUMMARIZE_COUNT messages are replaced with a single summary block.
+const SUMMARIZE_AFTER  = 20; // total messages before summarizing
+const SUMMARIZE_COUNT  = 14; // how many old messages to collapse (must be even — full exchanges)
+
+async function summarizeHistory(oldMessages, session, playbook, phase) {
+  const toSummarize = oldMessages.slice(0, SUMMARIZE_COUNT);
+  const convo = toSummarize
+    .map(m => `${m.role === "ai" ? "Facilitator" : m.author || "Participant"}: ${m.text}`)
+    .join("\n\n");
+  try {
+    const resp = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-6", max_tokens: 400,
+        system: "You are summarizing a cybersecurity tabletop exercise conversation for context compression. Be concise and factual.",
+        messages: [{
+          role: "user",
+          content: `Summarize the following tabletop exercise conversation in 3-5 sentences. Capture: decisions made, actions taken, key scenario developments, and any gaps identified. Do not editorialize.
+
+Scenario: ${session.scenario.name}. Playbook: ${playbook.name}. Phase at time of conversation: ${phase}.
+
+Conversation:
+${convo}`,
+        }],
+      }),
+    });
+    const data = await resp.json();
+    const summary = data.content?.find(b => b.type === "text")?.text || "";
+    return {
+      role: "ai",
+      isSummary: true,
+      text: `📝 [Earlier conversation summarized]\n\n${summary}`,
+      time: toSummarize[toSummarize.length - 1]?.time || "",
+    };
+  } catch {
+    // If summarization fails, just drop the oldest messages silently
+    return null;
+  }
 }
 
 // ── Exercise View ─────────────────────────────────────────────
@@ -1898,7 +2167,9 @@ function ExerciseView({ session, onEnd }) {
   const [loading, setLoading] = useState(false);
   const [tab, setTab] = useState("discussion");
   const [facilitatorConfig, setFacilitatorConfig] = useState(session.facilitatorConfig);
-  const [confirmModal, setConfirmModal] = useState(null); // null | "end-early" | "complete"
+  const [confirmModal, setConfirmModal] = useState(null);
+
+  const storage = useChatStorage(session);
 
   const currentPhase = phases[phaseIdx];
   const phaseGuidance = [
@@ -1919,7 +2190,22 @@ function ExerciseView({ session, onEnd }) {
     return data.content?.find(b => b.type === "text")?.text || "";
   };
 
-  useEffect(() => { initSession(); }, []);
+  // Persist to localStorage after every message or phase change
+  useEffect(() => {
+    if (messages.length > 0) storage.save(messages, timeline, phaseIdx, session);
+  }, [messages, timeline, phaseIdx]);
+
+  // On mount: restore from resume data if passed, otherwise init fresh
+  useEffect(() => {
+    if (session._resumeData) {
+      const r = session._resumeData;
+      setMessages(r.messages || []);
+      setTimeline(r.timeline || [{ label: "Session resumed", detail: session.scenario.name, time: new Date().toLocaleTimeString() }]);
+      setPhaseIdx(r.phaseIdx || 0);
+    } else {
+      initSession();
+    }
+  }, []);
 
   const getSystemPrompt = () => buildSystemPrompt(facilitatorConfig, session.scenario, playbook, currentPhase, session.participants);
 
@@ -1937,18 +2223,36 @@ function ExerciseView({ session, onEnd }) {
     setLoading(false);
   };
 
+  // Build the API history, summarizing if it has grown too large
+  const buildApiHistory = async (currentMessages) => {
+    let msgs = [...currentMessages];
+    if (msgs.length > SUMMARIZE_AFTER) {
+      const summary = await summarizeHistory(msgs, session, playbook, currentPhase);
+      if (summary) {
+        msgs = [summary, ...msgs.slice(SUMMARIZE_COUNT)];
+        // Update UI messages with summary replacing old entries
+        setMessages(msgs);
+      } else {
+        // Fallback: just drop oldest messages
+        msgs = msgs.slice(SUMMARIZE_COUNT);
+      }
+    }
+    return msgs.map(m => ({
+      role: m.role === "ai" ? "assistant" : "user",
+      content: m.role === "ai" ? m.text : `${m.author || "Participant"}: ${m.text}`,
+    }));
+  };
+
   const sendMessage = async (userText) => {
     const participant = session.participants[0];
     const author = participant?.name || participant?.role || "Participant";
     const userMsg = { role: "user", author, text: userText, time: new Date().toLocaleTimeString() };
-    setMessages(prev => [...prev, userMsg]);
+    const updatedMessages = [...messages, userMsg];
+    setMessages(updatedMessages);
     setTimeline(prev => [...prev, { label: `${author} responded`, detail: userText.slice(0, 70) + (userText.length > 70 ? "…" : ""), time: new Date().toLocaleTimeString() }]);
     setLoading(true);
     try {
-      const history = [...messages, userMsg].map(m => ({
-        role: m.role === "ai" ? "assistant" : "user",
-        content: m.role === "ai" ? m.text : `${m.author || "Participant"}: ${m.text}`
-      }));
+      const history = await buildApiHistory(updatedMessages);
       const text = await callClaude(history, getSystemPrompt());
       setMessages(prev => [...prev, { role: "ai", text, time: new Date().toLocaleTimeString() }]);
     } catch {
@@ -1994,7 +2298,7 @@ function ExerciseView({ session, onEnd }) {
         <div style={{ padding: "10px 24px 12px", background: "#0a0f18" }}>
           <div className="phases">
             {phases.map((p, i) => (
-              <div key={i} className={`phase-item${i === phaseIdx ? " active" : i < phaseIdx ? " done" : ""}`} onClick={() => setPhaseIdx(i)}>
+              <div key={i} className={`phase-item${i === phaseIdx ? " active" : i < phaseIdx ? " done" : ""}`}>
                 {i > 0 && <div className="phase-dot" />}
                 <div style={{ fontSize: 10, fontFamily: "'Share Tech Mono', monospace", marginBottom: 2, opacity: 0.7 }}>{i < phaseIdx ? "✓ " : ""}{String(i + 1).padStart(2, "0")}</div>
                 <div>{p}</div>
@@ -2010,7 +2314,15 @@ function ExerciseView({ session, onEnd }) {
       <div className="main" style={{ paddingBottom: 60 }}>
         {tab === "discussion" && (
           <div className="grid-2 gap-4">
-            <AIChat scenario={session.scenario} phase={currentPhase} messages={messages} onMessage={sendMessage} loading={loading} />
+            <AIChat
+              scenario={session.scenario}
+              phase={currentPhase}
+              messages={messages}
+              onMessage={sendMessage}
+              loading={loading}
+              onAdvancePhase={advancePhase}
+              isLastPhase={phaseIdx >= phases.length - 1}
+            />
             <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
               <div className="card">
                 <div className="card-title">SCENARIO BRIEF</div>
@@ -2118,7 +2430,12 @@ function ExerciseView({ session, onEnd }) {
           body={`You're currently in the ${currentPhase} phase with ${messages.filter(m => m.role !== "ai").length} responses logged. Ending early will stop the exercise and take you to the After-Action Report. This cannot be undone.`}
           confirmLabel="End Exercise"
           confirmStyle={{ background: "rgba(220,38,38,0.2)", color: "#f87171", border: "1px solid rgba(220,38,38,0.4)" }}
-          onConfirm={() => { setConfirmModal(null); onEnd(messages, timeline); }}
+          onConfirm={() => {
+            setConfirmModal(null);
+            lastPlayedStorage.save(session.scenario, session.playbook, session.sessionName);
+            storage.clear();
+            onEnd(messages, timeline);
+          }}
           onCancel={() => setConfirmModal(null)}
         />
       )}
@@ -2129,7 +2446,12 @@ function ExerciseView({ session, onEnd }) {
           body="This will end the session and generate your After-Action Report. Make sure your team has finished discussing the final phase before proceeding."
           confirmLabel="Complete Exercise ✓"
           confirmStyle={{ background: "rgba(22,163,74,0.2)", color: "#4ade80", border: "1px solid rgba(22,163,74,0.4)" }}
-          onConfirm={() => { setConfirmModal(null); onEnd(messages, timeline); }}
+          onConfirm={() => {
+            setConfirmModal(null);
+            lastPlayedStorage.save(session.scenario, session.playbook, session.sessionName);
+            storage.clear();
+            onEnd(messages, timeline);
+          }}
           onCancel={() => setConfirmModal(null)}
         />
       )}
@@ -2139,10 +2461,70 @@ function ExerciseView({ session, onEnd }) {
 
 // ── Root ──────────────────────────────────────────────────────
 export default function App() {
-  const [screen, setScreen] = useState("setup");
+  const [screen, setScreen] = useState("landing"); // landing | resume | setup | exercise | aar
   const [session, setSession] = useState(null);
   const [exerciseData, setExerciseData] = useState({ messages: [], timeline: [], duration: 0 });
+  const [savedSession, setSavedSession] = useState(null); // active unfinished session found in localStorage
+  const [lastPlayed, setLastPlayed] = useState(null);     // most recently completed scenario
   const startTimeRef = useRef(null);
+
+  // Load lastPlayed on mount — always show it on scenario selection
+  useEffect(() => {
+    setLastPlayed(lastPlayedStorage.load());
+  }, []);
+
+  const handleBegin = () => {
+    // Check for an active unfinished session
+    const allKeys = Object.keys(localStorage).filter(k => k.startsWith("tactician:") && k !== LAST_PLAYED_KEY);
+    const found = allKeys.map(k => {
+      try { return { key: k, ...JSON.parse(localStorage.getItem(k)) }; } catch { return null; }
+    }).filter(Boolean).find(s => s.messages?.length > 0);
+
+    if (found) {
+      setSavedSession(found);
+      setScreen("resume");
+    } else {
+      setScreen("setup");
+    }
+    window.scrollTo({ top: 0, behavior: "instant" });
+  };
+
+  const handleResumeSession = () => {
+    // Reconstruct a minimal session object from the saved data so ExerciseView can render
+    // The full session config was saved inside the storage key name — we pass savedSession
+    // directly through to ExerciseView via a special resume path
+    setSavedSession(prev => prev); // keep it; ExerciseView will read from localStorage by key
+    // We need to rebuild the session from the storage key and stored scenario info.
+    // Since we only have metadata in the key, we match against SCENARIOS + INDUSTRY_PLAYBOOKS.
+    const keyParts = savedSession.key.replace("tactician:", "").split(":");
+    const scenarioId = keyParts[keyParts.length - 1];
+    const scenario = SCENARIOS.find(s => s.id === scenarioId) || SCENARIOS[0];
+    // Reconstruct playbook — prefer saved object, then match by name, then default to CISA
+    const savedPlaybook = savedSession.playbook;
+    const playbook = savedPlaybook?.phases?.length
+      ? savedPlaybook
+      : INDUSTRY_PLAYBOOKS.find(pb => pb.name === savedPlaybook?.name) || INDUSTRY_PLAYBOOKS[0];
+
+    // Build a minimal session — participants and facilitatorConfig from saved data or defaults
+    const restoredSession = {
+      scenario,
+      playbook,
+      participants: savedSession.participants || [{ role: "Facilitator", name: "", id: "Facilitator", active: true }],
+      sessionName: savedSession.sessionName || keyParts.slice(0, -1).join(" "),
+      facilitatorConfig: savedSession.facilitatorConfig || { ...DEFAULT_FACILITATOR },
+      _resumeData: savedSession,
+    };
+    setSession(restoredSession);
+    startTimeRef.current = Date.now();
+    setScreen("exercise");
+    window.scrollTo({ top: 0, behavior: "instant" });
+  };
+
+  const handleStartNew = () => {
+    setSavedSession(null);
+    setScreen("setup");
+    window.scrollTo({ top: 0, behavior: "instant" });
+  };
 
   const handleStart = (s) => {
     setSession(s);
@@ -2154,14 +2536,17 @@ export default function App() {
   const handleEnd = (messages, timeline) => {
     const duration = Math.floor((Date.now() - (startTimeRef.current || Date.now())) / 1000);
     setExerciseData({ messages, timeline, duration });
+    setLastPlayed(lastPlayedStorage.load()); // refresh after exercise writes lastPlayed
     setScreen("aar");
     window.scrollTo({ top: 0, behavior: "instant" });
   };
 
   const handleNewScenario = () => {
     setSession(null);
+    setSavedSession(null);
     setExerciseData({ messages: [], timeline: [], duration: 0 });
     startTimeRef.current = null;
+    setLastPlayed(lastPlayedStorage.load());
     setScreen("setup");
     window.scrollTo({ top: 0, behavior: "instant" });
   };
@@ -2174,8 +2559,45 @@ export default function App() {
         stopped={screen === "aar"}
         finalDuration={exerciseData.duration}
       />
-      {screen === "setup" && <ParticipantSetup onStart={handleStart} />}
-      {screen === "exercise" && session && <ExerciseView session={session} onEnd={handleEnd} />}
+      {screen === "landing" && <LandingPage onBegin={handleBegin} />}
+
+      {/* Resume prompt — shown between landing and setup when an active session is found */}
+      {screen === "resume" && savedSession && (
+        <div className="main" style={{ maxWidth: 560, paddingTop: 60 }}>
+          <div className="card" style={{ textAlign: "center", padding: "36px 32px" }}>
+            <div style={{ fontSize: 36, marginBottom: 16 }}>💾</div>
+            <div style={{ fontSize: 17, fontWeight: 700, color: "#e0eaff", marginBottom: 8 }}>
+              Unfinished Session Found
+            </div>
+            <div style={{ fontSize: 13, color: "#4a6a8a", lineHeight: 1.7, marginBottom: 24 }}>
+              You have an unfinished exercise saved.<br />
+              <span style={{ color: "#7cb3f5", fontFamily: "'Share Tech Mono', monospace" }}>
+                {savedSession.sessionName || "Unnamed Session"}
+              </span>
+              <br />
+              <span style={{ fontSize: 12, color: "#3a5a7a" }}>
+                {savedSession.messages?.length || 0} messages · Last saved {savedSession.savedAt ? new Date(savedSession.savedAt).toLocaleString() : "recently"}
+              </span>
+            </div>
+            <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
+              <button className="btn btn-primary" onClick={handleResumeSession}>
+                ↩ Resume Session
+              </button>
+              <button className="btn btn-ghost" onClick={handleStartNew}>
+                + Start New Exercise
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {screen === "setup" && <ParticipantSetup onStart={handleStart} lastPlayed={lastPlayed} />}
+      {screen === "exercise" && session && (
+        <ExerciseView
+          session={session}
+          onEnd={handleEnd}
+        />
+      )}
       {screen === "aar" && session && (
         <AARView
           session={session}
