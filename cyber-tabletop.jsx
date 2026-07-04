@@ -901,7 +901,7 @@ CORE BEHAVIOR:
 - Never volunteer the right answer. Never ask "have you considered X?" unless they have explicitly asked for a hint.
 - Keep responses under 150 words unless delivering a major scenario development.
 - End EVERY response with a single short line on its own that invites action — e.g. "What is your team's next action?" or "How does your team respond?" or "The clock is ticking — what do you do?" Vary the phrasing; never repeat the same closing line twice in a row.
-- When the team has sufficiently addressed the key objectives of the current phase — demonstrated sound decision-making, covered the critical steps, and shown readiness to move forward — append the exact marker [ADVANCE_PHASE] on its own line at the very end of your response (after the closing action question). Do not append it prematurely; only when the phase is genuinely complete. Do not explain or mention the marker — the app handles it silently.
+- When the team has sufficiently addressed the key objectives of the current phase — demonstrated sound decision-making, covered the critical steps, and shown readiness to move forward — append the exact marker [ADVANCE_PHASE] on its own line at the very end of your response (after the closing action question). Do not append it prematurely; only when the phase is genuinely complete. Do not explain or mention the marker — the app handles it silently. If the team continues discussing after you have already suggested advancing, you may repeat the [ADVANCE_PHASE] marker in subsequent responses if the phase objectives remain met.
 
 HINT MODE:
 - If a participant explicitly asks for a hint, help, direction, or says they are stuck, briefly shift into hint mode: acknowledge the request, then offer one directional nudge grounded in ${playbook.name} — not the answer, just a pointer toward the right area of thinking. Return to observer mode immediately after.
@@ -913,9 +913,20 @@ HINT MODE:
   [OPTION_D] Brief action description
   After the team picks one, evaluate their choice and continue the simulation from that decision.
 
+MULTI-ROLE RESPONSES:
+- A single message may contain responses from multiple roles at once, each line labeled "RoleName (Role Title): response". When this happens, address each role individually and clearly — using the format "To [Role]: ..." for each one — before offering a single shared closing question at the end.
+
 Tone: ${toneMap[config.tone]}.
 Difficulty: ${diffMap[config.difficulty]}.
 Pacing: ${probMap[config.probing]}.${focus}${custom}`;
+}
+
+// Format a set of simultaneous per-role responses into a single labeled block
+function formatMultiRoleMessage(responses) {
+  return responses
+    .filter(r => r.text.trim())
+    .map(r => `${r.name || r.role} (${r.role}): ${r.text.trim()}`)
+    .join("\n\n");
 }
 
 // ── Footer ────────────────────────────────────────────────────
@@ -1236,7 +1247,7 @@ function ParticipantSetup({ onStart, lastPlayed }) {
   return (
     <div className="main">
       {/* Stepper */}
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 28, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, marginBottom: 28, flexWrap: "wrap" }}>
         {STEPS.map((s, i) => (
           <div key={i} style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <div style={{
@@ -1254,7 +1265,7 @@ function ParticipantSetup({ onStart, lastPlayed }) {
       {/* ── Step 0: Scenario ── */}
       {step === 0 && (
         <>
-          <div className="section-header">
+          <div className="section-header" style={{ display: "block", textAlign: "center" }}>
             <div><div className="section-title">Choose a Scenario</div><div className="section-sub">Select the incident type your team will practice, or let the platform choose for you.</div></div>
           </div>
 
@@ -1332,10 +1343,10 @@ function ParticipantSetup({ onStart, lastPlayed }) {
       {/* ── Step 1: Playbook ── */}
       {step === 1 && (
         <>
-          <div className="section-header">
+          <div className="section-header" style={{ display: "block", maxWidth: 760, margin: "0 auto 16px", textAlign: "center" }}>
             <div><div className="section-title">Select a Playbook</div><div className="section-sub">Industry standard or your own — Claude reads it automatically.</div></div>
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 12, maxWidth: 760, marginBottom: 24 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12, maxWidth: 760, margin: "0 auto 24px" }}>
             {INDUSTRY_PLAYBOOKS.map(pb => (
               <div key={pb.id}
                 className={`scenario-card${selected.playbook?.id === pb.id ? " selected" : ""}`}
@@ -1366,10 +1377,10 @@ function ParticipantSetup({ onStart, lastPlayed }) {
       {/* ── Step 2: Participants ── */}
       {step === 2 && (
         <>
-          <div className="section-header">
+          <div className="section-header" style={{ display: "block", maxWidth: 680, margin: "0 auto 16px", textAlign: "center" }}>
             <div><div className="section-title">Participants & Session</div><div className="section-sub">Enable the roles joining this exercise. Names are optional — leave blank to use the role title.</div></div>
           </div>
-          <div style={{ maxWidth: 680, marginBottom: 24, display: "flex", flexDirection: "column", gap: 16 }}>
+          <div style={{ maxWidth: 680, margin: "0 auto 24px", display: "flex", flexDirection: "column", gap: 16 }}>
 
             {/* Session details stacked on top */}
             <div className="card">
@@ -1465,13 +1476,13 @@ function ParticipantSetup({ onStart, lastPlayed }) {
       {/* ── Step 3: Facilitator Settings ── */}
       {step === 3 && (
         <>
-          <div className="section-header">
+          <div className="section-header" style={{ display: "block", maxWidth: 760, margin: "0 auto 16px", textAlign: "center" }}>
             <div>
               <div className="section-title">AI Facilitator Settings</div>
               <div className="section-sub">Shape how the AI facilitates — tone, difficulty, focus areas, and custom instructions.</div>
             </div>
           </div>
-          <div style={{ maxWidth: 760, marginBottom: 24 }}>
+          <div style={{ maxWidth: 760, margin: "0 auto 24px" }}>
             <div className="card">
               <div className="card-title">Facilitator Configuration</div>
               <FacilitatorSettings
@@ -1490,8 +1501,11 @@ function ParticipantSetup({ onStart, lastPlayed }) {
         </>
       )}
 
-      {/* Nav */}
-      <div style={{ display: "flex", gap: 10, paddingBottom: 40 }}>
+      {/* Nav — width matches each step's content column so buttons align left under the content, not the page */}
+      <div style={{
+        display: "flex", gap: 10, paddingBottom: 40,
+        ...(step === 0 ? {} : { maxWidth: step === 2 ? 680 : 760, margin: "0 auto" }),
+      }}>
         {step > 0 && <button className="btn btn-ghost" onClick={() => {
           // Going back to step 0 after randomizer: keep the hidden scenario,
           // just return to the scenario page — Surprise Me will show as selected
@@ -1509,7 +1523,7 @@ function ParticipantSetup({ onStart, lastPlayed }) {
               className="btn btn-primary"
               disabled={!canProceed}
               style={!canProceed ? { opacity: 0.4, pointerEvents: "none" } : {}}
-            onClick={() => onStart({ ...selected, participants: activeParticipants })}>
+            onClick={() => onStart({ ...selected, participants: activeParticipants, usedRandomizer })}>
             Launch Exercise →
           </button>}
       </div>
@@ -1580,7 +1594,69 @@ function stripOptions(text) {
 function hasAdvancePhase(text) { return /\[ADVANCE_PHASE\]/i.test(text); }
 function stripAdvancePhase(text) { return text.replace(/\[ADVANCE_PHASE\]/gi, "").replace(/\n{3,}/g, "\n\n").trim(); }
 
-function AIChat({ scenario, phase, messages, onMessage, loading, onAdvancePhase, isLastPhase }) {
+// ── Multi-Role Response Round ─────────────────────────────────
+function MultiRoleInputPanel({ participants, onSubmit, onCancel, loading }) {
+  const [drafts, setDrafts] = useState(() =>
+    Object.fromEntries((participants || []).map(p => [p.id, ""]))
+  );
+
+  const setDraft = (id, val) => setDrafts(d => ({ ...d, [id]: val }));
+  const filledCount = Object.values(drafts).filter(v => v.trim()).length;
+
+  const submit = () => {
+    const responses = (participants || [])
+      .map(p => ({ role: p.role, name: p.name, text: drafts[p.id] || "" }))
+      .filter(r => r.text.trim());
+    if (!responses.length) return;
+    onSubmit(responses);
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      <div style={{ fontSize: 11, color: "#4a6fa5", fontFamily: "'Share Tech Mono', monospace", letterSpacing: "0.05em" }}>
+        MULTI-ROLE RESPONSE ROUND · leave blank to skip a role
+      </div>
+      {(participants || []).map(p => (
+        <div key={p.id} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          <label style={{ marginBottom: 0 }}>{p.name || p.role} <span style={{ color: "#2a4a6a" }}>({p.role})</span></label>
+          <textarea
+            placeholder={`${p.role}'s response…`}
+            value={drafts[p.id]}
+            onChange={e => setDraft(p.id, e.target.value)}
+            style={{ minHeight: 56 }}
+          />
+        </div>
+      ))}
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+        <button className="btn btn-ghost btn-sm" onClick={onCancel} disabled={loading}>Cancel</button>
+        <button className="btn btn-primary btn-sm" disabled={!filledCount || loading} onClick={submit}>
+          {loading ? <span className="spinner" /> : `⚡ Send ${filledCount} Response${filledCount === 1 ? "" : "s"}`}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function MultiRoleMessageGroup({ msg }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <div style={{ fontSize: 10, color: "#3a5a7a", fontFamily: "'Share Tech Mono', monospace", letterSpacing: "0.05em" }}>
+        MULTI-ROLE RESPONSE · {msg.time}
+      </div>
+      {msg.authors.map((a, i) => (
+        <div key={i} className="chat-msg">
+          <div className="chat-avatar">{(a.name || a.role)[0].toUpperCase()}</div>
+          <div className="chat-body">
+            <div className="chat-meta"><span>{a.name || a.role}</span><span style={{ opacity: 0.5 }}>·</span><span className="mono" style={{ fontSize: 10 }}>{a.role}</span></div>
+            <div className="chat-text">{a.text}</div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function AIChat({ scenario, phase, messages, onMessage, loading, onAdvancePhase, isLastPhase, participants, multiMode, onToggleMultiMode, onMultiSend, hideScenarioName }) {
   const [input, setInput] = useState("");
   const [hintState, setHintState] = useState("none");
   const [selectedOption, setSelectedOption] = useState(null);
@@ -1598,8 +1674,21 @@ function AIChat({ scenario, phase, messages, onMessage, loading, onAdvancePhase,
   const bothUnlocked = hintState === "both-unlocked" ||
     (hintState === "options-used" && isLastAI && currentOptions.length === 0);
 
-  // Detect [ADVANCE_PHASE] marker in the last AI message
-  const advanceSuggested = isLastAI && !isLastPhase && hasAdvancePhase(lastMsg.text);
+  // Track whether [ADVANCE_PHASE] has been suggested for the current phase.
+  // Once suggested, keep the button visible until the user clicks it or the phase advances.
+  const [phaseAdvanceSuggested, setPhaseAdvanceSuggested] = useState(false);
+
+  // Set flag when any AI message in this phase contains [ADVANCE_PHASE]
+  useEffect(() => {
+    if (isLastAI && !isLastPhase && hasAdvancePhase(lastMsg.text)) {
+      setPhaseAdvanceSuggested(true);
+    }
+  }, [messages]);
+
+  // Reset when the phase changes (parent prop update signals a new phase)
+  useEffect(() => {
+    setPhaseAdvanceSuggested(false);
+  }, [phase]);
 
   // When a new AI message arrives, scroll its top into view inside the chat area
   useEffect(() => {
@@ -1657,10 +1746,22 @@ function AIChat({ scenario, phase, messages, onMessage, loading, onAdvancePhase,
 
   return (
     <div className="card" style={{ display: "flex", flexDirection: "column" }}>
-      <div className="card-title" style={{ marginBottom: 12 }}>AI FACILITATOR · {scenario?.name?.toUpperCase()}</div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+        <div className="card-title" style={{ marginBottom: 0 }}>AI FACILITATOR{hideScenarioName ? " · MYSTERY SCENARIO" : ` · ${scenario?.name?.toUpperCase()}`}</div>
+        {participants?.length > 1 && !showOptions && (
+          <button
+            className={`btn btn-sm ${multiMode ? "btn-active" : "btn-ghost"}`}
+            onClick={onToggleMultiMode}
+            title="Collect responses from multiple roles at once"
+          >👥 Multi-Role Response</button>
+        )}
+      </div>
       <div className="chat-area" ref={chatAreaRef}>
         {messages.map((m, i) => {
           const isThisLastAI = m.role === "ai" && i === messages.length - 1;
+          if (m.multi) {
+            return <MultiRoleMessageGroup key={i} msg={m} />;
+          }
           // Strip [OPTION_X] and [ADVANCE_PHASE] markers from every AI message
           const displayText = m.role === "ai"
             ? stripAdvancePhase(stripOptions(m.text))
@@ -1709,7 +1810,7 @@ function AIChat({ scenario, phase, messages, onMessage, loading, onAdvancePhase,
               🔀 Still stuck? Ask for options
             </button>
           )}
-          {advanceSuggested && (
+          {phaseAdvanceSuggested && !isLastPhase && (
             <button className="msg-action-btn advance-btn" onClick={onAdvancePhase}
               title="The AI facilitator suggests the team is ready to move to the next phase">
               ✅ Advance to next phase
@@ -1770,6 +1871,13 @@ function AIChat({ scenario, phase, messages, onMessage, loading, onAdvancePhase,
           {/* Invisible sentinel at the true bottom of the options section for scroll targeting */}
           <div ref={optionsBottomRef} style={{ height: 1 }} />
         </div>
+      ) : multiMode ? (
+        <MultiRoleInputPanel
+          participants={participants}
+          loading={loading}
+          onCancel={onToggleMultiMode}
+          onSubmit={onMultiSend}
+        />
       ) : (
         <div>
           <div style={{ display: "flex", gap: 8 }}>
@@ -1839,11 +1947,19 @@ function AARView({ session, timeline, messages, duration, onNewScenario }) {
     ? `${Math.floor(s / 3600) > 0 ? Math.floor(s / 3600) + "h " : ""}${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}m ${String(s % 60).padStart(2, "0")}s`
     : "—";
 
+  const responseCount = messages.reduce(
+    (acc, m) => m.role === "ai" ? acc : acc + (m.multi ? m.authors.length : 1), 0
+  );
+
   const generate = async () => {
     setLoading(true);
     setAarData(null);
     try {
-      const log = messages.filter(m => m.role !== "ai").map(m => `${m.author || m.role}: ${m.text}`).join("\n");
+      const log = messages.filter(m => m.role !== "ai").map(m =>
+        m.multi
+          ? m.authors.map(a => `${a.name || a.role} (${a.role}): ${a.text}`).join("\n")
+          : `${m.author || m.role}: ${m.text}`
+      ).join("\n");
       const resp = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1972,7 +2088,7 @@ Return this exact JSON shape with no other text:
   <div class="metrics">
     <div class="metric"><div class="metric-value">${session.participants.length}</div><div class="metric-label">Participants</div></div>
     <div class="metric"><div class="metric-value">${fmt(duration)}</div><div class="metric-label">Duration</div></div>
-    <div class="metric"><div class="metric-value">${messages.filter(m => m.role !== "ai").length}</div><div class="metric-label">Responses</div></div>
+    <div class="metric"><div class="metric-value">${responseCount}</div><div class="metric-label">Responses</div></div>
   </div>
 
   <div class="section">
@@ -2077,7 +2193,7 @@ Return this exact JSON shape with no other text:
             <div className="metric-label aar-metric-label">Duration</div>
           </div>
           <div className="metric-box aar-metric-box">
-            <div className="metric-value aar-metric-value">{messages.filter(m => m.role !== "ai").length}</div>
+            <div className="metric-value aar-metric-value">{responseCount}</div>
             <div className="metric-label aar-metric-label">Responses</div>
           </div>
         </div>
@@ -2339,7 +2455,36 @@ function ConfirmModal({ icon, title, body, confirmLabel, confirmStyle, cancelLab
   );
 }
 
-// ── Storage key helper ────────────────────────────────────────
+// Varied closing lines for inject messages, keyed by urgency color
+const INJECT_CLOSINGS = {
+  critical: [
+    "Clock is ticking — how does your team respond?",
+    "This changes everything. What's your immediate action?",
+    "The situation is escalating. What does your team do?",
+    "Every second counts. How does your team react?",
+  ],
+  high: [
+    "How does your team handle this development?",
+    "This requires an immediate decision. What's your next move?",
+    "Your team needs to act. What's the call?",
+    "A decision is needed now. How do you proceed?",
+  ],
+  medium: [
+    "How does this affect your team's current plan?",
+    "What adjustments does your team need to make?",
+    "How do you incorporate this into your response?",
+    "How does your team account for this?",
+  ],
+};
+
+const getInjectClosing = (color) => {
+  const isRed    = color === "#dc2626";
+  const isOrange = color === "#ea580c";
+  const pool = isRed ? INJECT_CLOSINGS.critical
+    : isOrange ? INJECT_CLOSINGS.high
+    : INJECT_CLOSINGS.medium;
+  return pool[Math.floor(Math.random() * pool.length)];
+};
 const storageKey = (session) =>
   `tactician:${session.sessionName}:${session.scenario.id}`.replace(/\s+/g, "_").slice(0, 120);
 
@@ -2469,6 +2614,7 @@ function ExerciseView({ session, onEnd }) {
   const [tab, setTab] = useState("discussion");
   const [facilitatorConfig, setFacilitatorConfig] = useState(session.facilitatorConfig);
   const [confirmModal, setConfirmModal] = useState(null);
+  const [multiMode, setMultiMode] = useState(false);
 
   const storage = useChatStorage(session);
 
@@ -2562,8 +2708,42 @@ function ExerciseView({ session, onEnd }) {
     setLoading(false);
   };
 
+  const sendMultiRoleMessage = async (responses) => {
+    const filled = responses.filter(r => r.text.trim());
+    if (!filled.length) return;
+    const combinedText = formatMultiRoleMessage(filled);
+    const userMsg = {
+      role: "user",
+      multi: true,
+      authors: filled,
+      text: combinedText,
+      time: new Date().toLocaleTimeString(),
+    };
+    const updatedMessages = [...messages, userMsg];
+    setMessages(updatedMessages);
+    setTimeline(prev => [
+      ...prev,
+      ...filled.map(r => ({
+        label: `${r.name || r.role} responded (multi-role round)`,
+        detail: r.text.slice(0, 70) + (r.text.length > 70 ? "…" : ""),
+        time: new Date().toLocaleTimeString(),
+      })),
+    ]);
+    setLoading(true);
+    try {
+      const history = await buildApiHistory(updatedMessages);
+      const text = await callClaude(history, getSystemPrompt());
+      setMessages(prev => [...prev, { role: "ai", text, time: new Date().toLocaleTimeString() }]);
+    } catch {
+      setMessages(prev => [...prev, { role: "ai", text: "Error. Please try again.", time: new Date().toLocaleTimeString() }]);
+    }
+    setLoading(false);
+    setMultiMode(false);
+  };
+
   const injectScenario = (inj) => {
-    const msg = { role: "ai", text: `⚠️ INJECT: ${inj.title}\n\n${inj.text}\n\nHow does your team respond to this development?`, time: new Date().toLocaleTimeString() };
+    const closing = getInjectClosing(inj.color);
+    const msg = { role: "ai", text: `⚠️ INJECT: ${inj.title}\n\n${inj.text}\n\n${closing}`, time: new Date().toLocaleTimeString() };
     setMessages(prev => [...prev, msg]);
     setTimeline(prev => [...prev, { label: `Inject: ${inj.title}`, detail: inj.text.slice(0, 60) + "…", time: new Date().toLocaleTimeString() }]);
     setTab("discussion");
@@ -2623,18 +2803,40 @@ function ExerciseView({ session, onEnd }) {
               loading={loading}
               onAdvancePhase={advancePhase}
               isLastPhase={phaseIdx >= phases.length - 1}
+              participants={session.participants}
+              multiMode={multiMode}
+              onToggleMultiMode={() => setMultiMode(v => !v)}
+              onMultiSend={sendMultiRoleMessage}
+              hideScenarioName={session.usedRandomizer}
             />
             <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
               <div className="card">
                 <div className="card-title">SCENARIO BRIEF</div>
-                <div style={{ display: "flex", gap: 12, alignItems: "flex-start", marginBottom: 10 }}>
-                  <span style={{ fontSize: 28 }}>{session.scenario.icon}</span>
-                  <div>
-                    <div style={{ fontWeight: 600, color: "#e0eaff", marginBottom: 4 }}>{session.scenario.name}</div>
-                    <span className={`badge badge-severity-${session.scenario.severity}`}>{session.scenario.severity}</span>
-                  </div>
-                </div>
-                <div style={{ fontSize: 13, color: "#6b82a0", lineHeight: 1.6 }}>{session.scenario.description}</div>
+                {session.usedRandomizer ? (
+                  <>
+                    <div style={{ display: "flex", gap: 12, alignItems: "flex-start", marginBottom: 10 }}>
+                      <span style={{ fontSize: 28 }}>🎲</span>
+                      <div>
+                        <div style={{ fontWeight: 600, color: "#e0eaff", marginBottom: 4 }}>Mystery Scenario</div>
+                        <span className="tag" style={{ background: "rgba(124,58,237,0.15)", color: "#a78bfa", border: "1px solid rgba(124,58,237,0.3)" }}>🎲 Randomized</span>
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 13, color: "#6b82a0", lineHeight: 1.6 }}>
+                      This scenario was randomly selected. Your team won't know what you're facing — read the facilitator's updates carefully and respond to what unfolds.
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div style={{ display: "flex", gap: 12, alignItems: "flex-start", marginBottom: 10 }}>
+                      <span style={{ fontSize: 28 }}>{session.scenario.icon}</span>
+                      <div>
+                        <div style={{ fontWeight: 600, color: "#e0eaff", marginBottom: 4 }}>{session.scenario.name}</div>
+                        <span className={`badge badge-severity-${session.scenario.severity}`}>{session.scenario.severity}</span>
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 13, color: "#6b82a0", lineHeight: 1.6 }}>{session.scenario.description}</div>
+                  </>
+                )}
               </div>
               <div className="card">
                 <div className="card-title">PHASE FOCUS · {currentPhase.toUpperCase()}</div>
@@ -2728,7 +2930,7 @@ function ExerciseView({ session, onEnd }) {
         <ConfirmModal
           icon="⚠️"
           title="End this exercise early?"
-          body={`You're currently in the ${currentPhase} phase with ${messages.filter(m => m.role !== "ai").length} responses logged. Ending early will stop the exercise and take you to the After-Action Report. This cannot be undone.`}
+          body={`You're currently in the ${currentPhase} phase with ${messages.reduce((acc, m) => m.role === "ai" ? acc : acc + (m.multi ? m.authors.length : 1), 0)} responses logged. Ending early will stop the exercise and take you to the After-Action Report. This cannot be undone.`}
           confirmLabel="End Exercise"
           confirmStyle={{ background: "rgba(220,38,38,0.2)", color: "#f87171", border: "1px solid rgba(220,38,38,0.4)" }}
           onConfirm={() => {
