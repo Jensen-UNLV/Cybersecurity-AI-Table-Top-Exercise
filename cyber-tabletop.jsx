@@ -115,12 +115,14 @@ const FontStyle = () => (
   <style>{`
     @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Inter:wght@300;400;500;600;700&display=swap');
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    html { scroll-behavior: smooth; }
+    html { scroll-behavior: smooth; height: 100%; }
     body {
       background: #080c10; color: #c9d1da;
       font-family: 'Inter', sans-serif; font-size: 14px; line-height: 1.6;
-      overflow-y: scroll;
+      overflow-y: scroll; min-height: 100%; display: flex; flex-direction: column;
     }
+    #root { display: flex; flex-direction: column; min-height: 100vh; }
+    .app-content { flex: 1; display: flex; flex-direction: column; }
     ::-webkit-scrollbar { width: 6px; }
     ::-webkit-scrollbar-track { background: #0f1620; }
     ::-webkit-scrollbar-thumb { background: #1e3a5f; border-radius: 3px; }
@@ -201,9 +203,9 @@ const FontStyle = () => (
       padding: 9px 18px; border-radius: 6px; border: none;
       font-size: 13px; font-weight: 500; cursor: pointer;
       display: inline-flex; align-items: center; gap: 7px;
-      transition: opacity 0.15s, background 0.15s; white-space: nowrap;
+      transition: background 0.15s; white-space: nowrap;
     }
-    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; transition: none; }
     .btn-primary { background: #1d4ed8; color: #fff; }
     .btn-primary:hover:not(:disabled) { background: #2563eb; }
     .btn-ghost { background: rgba(255,255,255,0.04); color: #93afd4; border: 1px solid #1a2a3a; }
@@ -514,6 +516,34 @@ const FontStyle = () => (
     .fade-up-delay-2 { animation-delay: 0.2s; opacity: 0; }
     .fade-up-delay-3 { animation-delay: 0.35s; opacity: 0; }
     .fade-up-delay-4 { animation-delay: 0.5s; opacity: 0; }
+
+    /* Footer */
+    .footer {
+      border-top: 1px solid #1a2a3a;
+      background: #0a0f18;
+      padding: 14px 24px;
+      display: flex; align-items: center; justify-content: space-between;
+      flex-wrap: wrap; gap: 10px;
+    }
+    .footer-left { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+    .footer-attr {
+      font-size: 11px; color: #2a4060;
+      font-family: 'Share Tech Mono', monospace; letter-spacing: 0.05em;
+    }
+    .footer-attr a { color: #3a5a80; text-decoration: none; }
+    .footer-attr a:hover { color: #60a5fa; }
+    .footer-feedback {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 5px 12px; border-radius: 5px;
+      border: 1px solid #1a2a3a; background: rgba(255,255,255,0.02);
+      color: #4a6a8a; font-size: 11px; font-family: 'Share Tech Mono', monospace;
+      text-decoration: none; letter-spacing: 0.04em;
+      transition: border-color 0.15s, color 0.15s, background 0.15s;
+    }
+    .footer-feedback:hover {
+      border-color: #dc2626; color: #f87171;
+      background: rgba(220,38,38,0.08);
+    }
 
     /* Voice waveform animation */
     .wave-bar {
@@ -888,6 +918,32 @@ Difficulty: ${diffMap[config.difficulty]}.
 Pacing: ${probMap[config.probing]}.${focus}${custom}`;
 }
 
+// ── Footer ────────────────────────────────────────────────────
+function Footer() {
+  return (
+    <footer className="footer">
+      <div className="footer-left">
+        <span className="footer-attr">
+          Created with <a href="https://claude.ai" target="_blank" rel="noreferrer">Claude AI</a> · Anthropic
+        </span>
+        <span className="footer-attr" style={{ color: "#1a2a3a" }}>|</span>
+        <span className="footer-attr">
+          Tactician v1.0 · UNLV Cybersecurity
+        </span>
+      </div>
+      <a
+        className="footer-feedback"
+        href="https://github.com/Jensen-UNLV/Cybersecurity-AI-Table-Top-Exercise/issues"
+        target="_blank"
+        rel="noreferrer"
+        title="Report a bug or suggest a feature on GitHub"
+      >
+        🐛 Report a Bug / Give Feedback
+      </a>
+    </footer>
+  );
+}
+
 // ── Landing Page ──────────────────────────────────────────────
 function LandingPage({ onBegin }) {
   return (
@@ -938,17 +994,210 @@ function LandingPage({ onBegin }) {
         >
           Begin Exercise →
         </button>
-        <div style={{ marginTop: 14, fontSize: 11, color: "#2a4060", fontFamily: "'Share Tech Mono', monospace", letterSpacing: "0.06em" }}>
-          POWERED BY CLAUDE · ANTHROPIC
+      </div>
+    </div>
+  );
+}
+
+// ── Reroll Modal ──────────────────────────────────────────────
+function RerollModal({ onKeepCurrent, onReroll }) {
+  const [rerolling, setRerolling] = useState(false);
+  const [btnIcon, setBtnIcon] = useState("🎲");
+
+  const handleBackdrop = (e) => { if (e.target === e.currentTarget && !rerolling) onKeepCurrent(); };
+
+  useEffect(() => {
+    const handler = (e) => { if (e.key === "Escape" && !rerolling) onKeepCurrent(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [rerolling]);
+
+  const handleReroll = () => {
+    if (rerolling) return;
+    setRerolling(true);
+    // Animate the button icon cycling through scenario icons
+    const icons = ["🎲", ...SCENARIOS.map(s => s.icon)];
+    let tick = 0;
+    const iv = setInterval(() => { setBtnIcon(icons[tick % icons.length]); tick++; }, 100);
+    setTimeout(() => {
+      clearInterval(iv);
+      setBtnIcon("✓");
+      onReroll();
+    }, 1000);
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={handleBackdrop}>
+      <div className="modal">
+        <div className="modal-icon">🎲</div>
+        <div className="modal-title">Pick a new random scenario?</div>
+        <div className="modal-body">
+          A scenario has already been secretly selected for your team. Choose an option below.
+        </div>
+        <div className="modal-actions">
+          <button className="btn btn-primary" disabled={rerolling} onClick={onKeepCurrent}>
+            Keep Current &amp; Continue →
+          </button>
+          <button
+            className="btn"
+            disabled={rerolling}
+            onClick={handleReroll}
+            style={{
+              background: "rgba(202,138,4,0.2)", color: "#fbbf24",
+              border: "1px solid rgba(202,138,4,0.4)", minWidth: 160,
+              display: "inline-flex", alignItems: "center",
+              justifyContent: "center", gap: 6,
+            }}
+          >
+            {rerolling
+              ? <><span style={{ fontSize: 16, lineHeight: 1 }}>{btnIcon}</span> Re-randomizing…</>
+              : <><span style={{ fontSize: 16, lineHeight: 1 }}>🎲</span> Yes, Re-randomize</>}
+          </button>
         </div>
       </div>
     </div>
   );
 }
 
+// ── Randomizer Card ───────────────────────────────────────────
+function RandomizerCard({ onSelect, isSelected, onContinue }) {
+  const [spinning, setSpinning] = useState(false);
+  const [displayIcon, setDisplayIcon] = useState("🎲");
+  const [confirmReroll, setConfirmReroll] = useState(false);
+  const intervalRef = useRef(null);
+  const isSelectedRef = useRef(isSelected);
+
+  // Keep ref in sync without triggering spin-stop side effect
+  useEffect(() => { isSelectedRef.current = isSelected; }, [isSelected]);
+
+  const prevIsSelected = useRef(isSelected);
+
+  // When parent clears isSelected (true→false), stop spin and reset
+  // When parent sets isSelected (false→true from back-nav), just reset icon
+  useEffect(() => {
+    const prev = prevIsSelected.current;
+    prevIsSelected.current = isSelected;
+    if (prev && !isSelected && spinning) {
+      // User picked a different scenario — stop the spin
+      setSpinning(false);
+      setDisplayIcon("🎲");
+      clearInterval(intervalRef.current);
+    } else if (isSelected && !spinning) {
+      // Restored via back navigation
+      setDisplayIcon("🎲");
+    }
+  }, [isSelected]);
+
+  // Clean up interval on unmount
+  useEffect(() => () => clearInterval(intervalRef.current), []);
+
+  const startSpin = (pick) => {
+    setSpinning(true);
+    let tick = 0;
+    const icons = SCENARIOS.map(s => s.icon);
+    clearInterval(intervalRef.current);
+    intervalRef.current = setInterval(() => {
+      setDisplayIcon(icons[tick % icons.length]);
+      tick++;
+    }, 80);
+    onSelect(pick);
+  };
+
+  const handleClick = () => {
+    if (spinning) return;
+    // If already selected, ask for confirmation before re-rolling
+    if (isSelected) {
+      setConfirmReroll(true);
+      return;
+    }
+    const pick = SCENARIOS[Math.floor(Math.random() * SCENARIOS.length)];
+    startSpin(pick);
+  };
+
+
+  return (
+    <>
+      <div
+        className={`scenario-card${isSelected && !spinning ? " selected" : ""}`}
+        onClick={handleClick}
+        style={{
+          borderStyle: isSelected && !spinning ? "solid" : "dashed",
+          borderColor: spinning ? "#ca8a04" : isSelected ? "#60a5fa" : "#1a3a5a",
+          background: spinning
+            ? "rgba(202,138,4,0.05)"
+            : isSelected
+            ? "rgba(96,165,250,0.06)"
+            : "rgba(29,78,216,0.03)",
+          cursor: spinning ? "default" : "pointer",
+          alignItems: "center",
+          justifyContent: "center",
+          textAlign: "center",
+          minHeight: 80,
+          transition: "border-color 0.3s, background 0.3s",
+        }}
+      >
+        <div style={{
+          fontSize: spinning ? 36 : 28,
+          marginBottom: 8,
+          transition: "font-size 0.1s",
+          filter: spinning ? "blur(1.5px)" : "none",
+        }}>
+          {displayIcon}
+        </div>
+        <div className="scenario-name" style={{
+          color: spinning ? "#ca8a04" : isSelected ? "#e0eaff" : "#7cb3f5",
+        }}>
+          {spinning ? "Randomizing…" : isSelected ? "Surprise Me ✓" : "Surprise Me"}
+        </div>
+        <div className="scenario-desc" style={{ marginTop: 6 }}>
+          {spinning
+            ? "Your scenario is being selected — click Continue when ready…"
+            : isSelected
+            ? "A scenario has been secretly selected. Click Continue to proceed, or click here to pick a new random scenario."
+            : "Feeling bold? Let the platform secretly choose your scenario. The team won't know what they're facing until the exercise starts."}
+        </div>
+        <div style={{ marginTop: 10 }}>
+          <span className="tag" style={{
+            background: isSelected && !spinning ? "rgba(96,165,250,0.15)" : "rgba(29,78,216,0.12)",
+            color: isSelected && !spinning ? "#93c5fd" : "#60a5fa",
+            border: isSelected && !spinning ? "1px solid rgba(96,165,250,0.3)" : "1px solid rgba(29,78,216,0.3)",
+          }}>
+            🎲 {isSelected && !spinning ? "Randomized" : "Random"}
+          </span>
+        </div>
+        {/* Continue button — shown once a scenario is locked in (spinning or settled) */}
+        {(isSelected || spinning) && onContinue && (
+          <button
+            className="btn btn-primary"
+            style={{ marginTop: 12, width: "100%" }}
+            onClick={e => { e.stopPropagation(); onContinue(); }}
+          >
+            {spinning ? "Continue →" : "Continue →"}
+          </button>
+        )}
+      </div>
+
+      {/* Re-roll confirmation — bespoke modal with animated re-randomize button */}
+      {confirmReroll && (
+        <RerollModal
+          onKeepCurrent={() => { setConfirmReroll(false); if (onContinue) onContinue(); }}
+          onReroll={() => {
+            setConfirmReroll(false);
+            // Pick a new scenario silently — no card animation, navigate directly
+            const pick = SCENARIOS[Math.floor(Math.random() * SCENARIOS.length)];
+            onSelect(pick); // update parent state with new pick
+            if (onContinue) onContinue();
+          }}
+        />
+      )}
+    </>
+  );
+}
+
 // ── Setup Flow ────────────────────────────────────────────────
 function ParticipantSetup({ onStart, lastPlayed }) {
   const [step, setStep] = useState(0);
+  const [usedRandomizer, setUsedRandomizer] = useState(false);
   const [selected, setSelected] = useState({
     scenario: null, playbook: null,
     participants: ROLES.map(role => ({ role, name: "", id: role, active: role === "Facilitator" })),
@@ -959,6 +1208,7 @@ function ParticipantSetup({ onStart, lastPlayed }) {
   // Auto-fill session name when scenario chosen
   const selectScenario = (sc) => {
     const date = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+    setUsedRandomizer(false); // manual pick clears randomizer flag
     setSelected(s => ({
       ...s, scenario: sc,
       sessionName: s.sessionName || `${sc.name} TTX — ${date}`,
@@ -973,12 +1223,13 @@ function ParticipantSetup({ onStart, lastPlayed }) {
 
   const activeParticipants = selected.participants.filter(p => p.active);
 
-  const canProceed = () => {
+  // Compute synchronously — no hooks, no deferred evaluation
+  const canProceed = (() => {
     if (step === 0) return !!selected.scenario;
     if (step === 1) return !!selected.playbook;
-    if (step === 2) return activeParticipants.length > 0 && selected.sessionName.trim();
-    return true; // step 3 (facilitator settings) always continuable
-  };
+    if (step === 2) return activeParticipants.length > 0 && !!selected.sessionName.trim();
+    return true;
+  })();
 
   const STEPS = ["Select Scenario", "Choose Playbook", "Participants", "AI Facilitator"];
 
@@ -1004,39 +1255,76 @@ function ParticipantSetup({ onStart, lastPlayed }) {
       {step === 0 && (
         <>
           <div className="section-header">
-            <div><div className="section-title">Choose a Scenario</div><div className="section-sub">Select the incident type your team will practice.</div></div>
+            <div><div className="section-title">Choose a Scenario</div><div className="section-sub">Select the incident type your team will practice, or let the platform choose for you.</div></div>
           </div>
+
+          {/* Randomizer — full width, above the regular options */}
+          <div style={{ marginBottom: 20 }}>
+            <RandomizerCard
+              isSelected={usedRandomizer}
+              onSelect={(sc) => {
+                const date = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+                setUsedRandomizer(true);
+                setSelected(s => ({ ...s, scenario: sc, sessionName: s.sessionName || `TTX — ${date}` }));
+              }}
+              onContinue={() => { setStep(1); window.scrollTo({ top: 0, behavior: "instant" }); }}
+            />
+          </div>
+
+          {/* Divider */}
+          <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
+            <div style={{ flex: 1, height: 1, background: "#1a2a3a" }} />
+            <span style={{ fontSize: 11, color: "#2a4a6a", fontFamily: "'Share Tech Mono', monospace", letterSpacing: "0.08em", whiteSpace: "nowrap" }}>OR SELECT A SPECIFIC SCENARIO</span>
+            <div style={{ flex: 1, height: 1, background: "#1a2a3a" }} />
+          </div>
+
+          {/* Regular scenario grid */}
           <div className="grid-3 gap-4" style={{ marginBottom: 24 }}>
-            {SCENARIOS.map(sc => (
-              <div key={sc.id} className={`scenario-card${selected.scenario?.id === sc.id ? " selected" : ""}`} onClick={() => selectScenario(sc)}>
-                <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
-                  <span className="scenario-icon">{sc.icon}</span>
-                  <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 5 }}>
-                    <span className={`badge badge-severity-${sc.severity}`}>{sc.severity}</span>
-                    {lastPlayed?.scenarioId === sc.id && (
-                      <span style={{
-                        fontSize: 10, fontFamily: "'Share Tech Mono', monospace",
-                        padding: "2px 7px", borderRadius: 3,
-                        background: "rgba(124,58,237,0.15)", color: "#a78bfa",
-                        border: "1px solid rgba(124,58,237,0.3)",
-                        whiteSpace: "nowrap",
-                      }}>
-                        ↺ Last played
-                      </span>
-                    )}
+            {SCENARIOS.map(sc => {
+              const isActive = selected.scenario?.id === sc.id && !usedRandomizer;
+              return (
+                <div key={sc.id}
+                  className={`scenario-card${isActive ? " selected" : ""}`}
+                  onClick={() => !isActive && selectScenario(sc)}
+                  style={{ cursor: isActive ? "default" : "pointer" }}
+                >
+                  <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
+                    <span className="scenario-icon">{sc.icon}</span>
+                    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 5 }}>
+                      <span className={`badge badge-severity-${sc.severity}`}>{sc.severity}</span>
+                      {lastPlayed?.scenarioId === sc.id && (
+                        <span style={{
+                          fontSize: 10, fontFamily: "'Share Tech Mono', monospace",
+                          padding: "2px 7px", borderRadius: 3,
+                          background: "rgba(124,58,237,0.15)", color: "#a78bfa",
+                          border: "1px solid rgba(124,58,237,0.3)",
+                          whiteSpace: "nowrap",
+                        }}>↺ Last played</span>
+                      )}
+                    </div>
                   </div>
+                  <div className="scenario-name">{sc.name}</div>
+                  <div className="scenario-desc">{sc.description}</div>
+                  {lastPlayed?.scenarioId === sc.id && (
+                    <div style={{ fontSize: 11, color: "#5a4a7a", fontFamily: "'Share Tech Mono', monospace" }}>
+                      {new Date(lastPlayed.completedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                      {lastPlayed.playbookName ? ` · ${lastPlayed.playbookName}` : ""}
+                    </div>
+                  )}
+                  <div className="scenario-tags">{sc.tags.map(t => <span key={t} className="tag">{t}</span>)}</div>
+                  {/* Continue button appears on selected card */}
+                  {isActive && (
+                    <button
+                      className="btn btn-primary"
+                      style={{ marginTop: 12, width: "100%" }}
+                      onClick={e => { e.stopPropagation(); setStep(1); window.scrollTo({ top: 0, behavior: "instant" }); }}
+                    >
+                      Continue →
+                    </button>
+                  )}
                 </div>
-                <div className="scenario-name">{sc.name}</div>
-                <div className="scenario-desc">{sc.description}</div>
-                {lastPlayed?.scenarioId === sc.id && (
-                  <div style={{ fontSize: 11, color: "#5a4a7a", fontFamily: "'Share Tech Mono', monospace" }}>
-                    {new Date(lastPlayed.completedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
-                    {lastPlayed.playbookName ? ` · ${lastPlayed.playbookName}` : ""}
-                  </div>
-                )}
-                <div className="scenario-tags">{sc.tags.map(t => <span key={t} className="tag">{t}</span>)}</div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </>
       )}
@@ -1204,10 +1492,23 @@ function ParticipantSetup({ onStart, lastPlayed }) {
 
       {/* Nav */}
       <div style={{ display: "flex", gap: 10, paddingBottom: 40 }}>
-        {step > 0 && <button className="btn btn-ghost" onClick={() => { setStep(s => s - 1); window.scrollTo({ top: 0, behavior: "instant" }); }}>← Back</button>}
+        {step > 0 && <button className="btn btn-ghost" onClick={() => {
+          // Going back to step 0 after randomizer: keep the hidden scenario,
+          // just return to the scenario page — Surprise Me will show as selected
+          setStep(s => s - 1);
+          window.scrollTo({ top: 0, behavior: "instant" });
+        }}>← Back</button>}
         {step < STEPS.length - 1
-          ? <button className="btn btn-primary" disabled={!canProceed()} onClick={() => { setStep(s => s + 1); window.scrollTo({ top: 0, behavior: "instant" }); }}>Continue →</button>
-          : <button className="btn btn-primary" disabled={!canProceed()}
+          ? <button
+              className="btn btn-primary"
+              disabled={!canProceed}
+              style={!canProceed ? { opacity: 0.4, pointerEvents: "none" } : {}}
+              onClick={() => { setStep(s => s + 1); window.scrollTo({ top: 0, behavior: "instant" }); }}
+            >Continue →</button>
+          : <button
+              className="btn btn-primary"
+              disabled={!canProceed}
+              style={!canProceed ? { opacity: 0.4, pointerEvents: "none" } : {}}
             onClick={() => onStart({ ...selected, participants: activeParticipants })}>
             Launch Exercise →
           </button>}
@@ -2552,61 +2853,64 @@ export default function App() {
   };
 
   return (
-    <>
+    <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", background: "#080c10" }}>
       <FontStyle />
       <Topbar
         sessionName={session?.sessionName}
         stopped={screen === "aar"}
         finalDuration={exerciseData.duration}
       />
-      {screen === "landing" && <LandingPage onBegin={handleBegin} />}
+      <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+        {screen === "landing" && <LandingPage onBegin={handleBegin} />}
 
-      {/* Resume prompt — shown between landing and setup when an active session is found */}
-      {screen === "resume" && savedSession && (
-        <div className="main" style={{ maxWidth: 560, paddingTop: 60 }}>
-          <div className="card" style={{ textAlign: "center", padding: "36px 32px" }}>
-            <div style={{ fontSize: 36, marginBottom: 16 }}>💾</div>
-            <div style={{ fontSize: 17, fontWeight: 700, color: "#e0eaff", marginBottom: 8 }}>
-              Unfinished Session Found
-            </div>
-            <div style={{ fontSize: 13, color: "#4a6a8a", lineHeight: 1.7, marginBottom: 24 }}>
-              You have an unfinished exercise saved.<br />
-              <span style={{ color: "#7cb3f5", fontFamily: "'Share Tech Mono', monospace" }}>
-                {savedSession.sessionName || "Unnamed Session"}
-              </span>
-              <br />
-              <span style={{ fontSize: 12, color: "#3a5a7a" }}>
-                {savedSession.messages?.length || 0} messages · Last saved {savedSession.savedAt ? new Date(savedSession.savedAt).toLocaleString() : "recently"}
-              </span>
-            </div>
-            <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
-              <button className="btn btn-primary" onClick={handleResumeSession}>
-                ↩ Resume Session
-              </button>
-              <button className="btn btn-ghost" onClick={handleStartNew}>
-                + Start New Exercise
-              </button>
+        {/* Resume prompt — shown between landing and setup when an active session is found */}
+        {screen === "resume" && savedSession && (
+          <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: "40px 24px" }}>
+            <div className="card" style={{ textAlign: "center", padding: "36px 32px", maxWidth: 480, width: "100%" }}>
+              <div style={{ fontSize: 36, marginBottom: 16 }}>💾</div>
+              <div style={{ fontSize: 17, fontWeight: 700, color: "#e0eaff", marginBottom: 8 }}>
+                Unfinished Session Found
+              </div>
+              <div style={{ fontSize: 13, color: "#4a6a8a", lineHeight: 1.7, marginBottom: 24 }}>
+                You have an unfinished exercise saved.<br />
+                <span style={{ color: "#7cb3f5", fontFamily: "'Share Tech Mono', monospace" }}>
+                  {savedSession.sessionName || "Unnamed Session"}
+                </span>
+                <br />
+                <span style={{ fontSize: 12, color: "#3a5a7a" }}>
+                  {savedSession.messages?.length || 0} messages · Last saved {savedSession.savedAt ? new Date(savedSession.savedAt).toLocaleString() : "recently"}
+                </span>
+              </div>
+              <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
+                <button className="btn btn-primary" onClick={handleResumeSession}>
+                  ↩ Resume Session
+                </button>
+                <button className="btn btn-ghost" onClick={handleStartNew}>
+                  + Start New Exercise
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {screen === "setup" && <ParticipantSetup onStart={handleStart} lastPlayed={lastPlayed} />}
-      {screen === "exercise" && session && (
-        <ExerciseView
-          session={session}
-          onEnd={handleEnd}
-        />
-      )}
-      {screen === "aar" && session && (
-        <AARView
-          session={session}
-          timeline={exerciseData.timeline}
-          messages={exerciseData.messages}
-          duration={exerciseData.duration}
-          onNewScenario={handleNewScenario}
-        />
-      )}
-    </>
+        {screen === "setup" && <ParticipantSetup onStart={handleStart} lastPlayed={lastPlayed} />}
+        {screen === "exercise" && session && (
+          <ExerciseView
+            session={session}
+            onEnd={handleEnd}
+          />
+        )}
+        {screen === "aar" && session && (
+          <AARView
+            session={session}
+            timeline={exerciseData.timeline}
+            messages={exerciseData.messages}
+            duration={exerciseData.duration}
+            onNewScenario={handleNewScenario}
+          />
+        )}
+      </div>
+      <Footer />
+    </div>
   );
 }
