@@ -52,6 +52,10 @@ const INJECT_LIBRARY = {
   ],
 };
 
+// Turn-limit defaults per pace tier — used as the initial maxTurns value
+// and as the "reset to default" target for each tier.
+const PACE_TURN_DEFAULTS = { relaxed: 6, standard: 4, tight: 2 };
+
 // Default facilitator config
 const DEFAULT_FACILITATOR = {
   tone: "professional",        // professional | conversational | intense
@@ -59,6 +63,8 @@ const DEFAULT_FACILITATOR = {
   probing: "balanced",         // gentle | balanced | aggressive
   focusAreas: [],              // legal | technical | communications | executive
   customInstructions: "",
+  turnPace: "standard",        // relaxed | standard | tight — default turn cap per phase
+  maxTurns: PACE_TURN_DEFAULTS.standard, // editable; "reset to default" restores this from turnPace
 };
 
 // ── Web Speech API helper ─────────────────────────────────────
@@ -216,13 +222,14 @@ const FontStyle = () => (
     .btn-icon { padding: 5px 8px; font-size: 14px; background: none; border: none; cursor: pointer; color: #4a6a8a; border-radius: 4px; }
     .btn-icon:hover { background: rgba(255,255,255,0.06); color: #93afd4; }
 
-    input[type=text], input[type=file], textarea, select {
+    input[type=text], input[type=number], input[type=file], textarea, select {
       background: #0a1520; border: 1px solid #1a2a3a; border-radius: 6px;
       color: #c9d1da; padding: 9px 12px; font-size: 13px;
       font-family: 'Inter', sans-serif; width: 100%; outline: none;
       transition: border-color 0.15s;
     }
-    input[type=text]:focus, textarea:focus, select:focus { border-color: #1d4ed8; }
+    input[type=text]:focus, input[type=number]:focus, textarea:focus, select:focus { border-color: #1d4ed8; }
+    input[type=number] { width: auto; }
     input[type=file] { padding: 7px 10px; cursor: pointer; }
     textarea { resize: vertical; min-height: 80px; }
     label { font-size: 12px; color: #4a6fa5; display: block; margin-bottom: 5px; }
@@ -711,7 +718,9 @@ function FacilitatorSettings({ config, onChange, scenario, playbook, participant
     scenario || { name: "[Scenario]", description: "[Scenario description]" },
     playbook || { name: "[Playbook]" },
     "[Current Phase]",
-    participants || [{ name: "", role: "[Role]" }]
+    participants || [{ name: "", role: "[Role]" }],
+    0,
+    config.maxTurns
   );
 
   const TONE_INFO = {
@@ -728,6 +737,11 @@ function FacilitatorSettings({ config, onChange, scenario, playbook, participant
     gentle: { label: "🤝 Supportive", tip: <><strong>Supportive</strong>Claude waits for the team to act and gives them space. Responds only when they take an action or ask a question — minimal interruption.</> },
     balanced: { label: "⚖️ Balanced", tip: <><strong>Balanced</strong>Responds to decisions with realistic scenario developments. Surfaces gaps as events rather than corrections. Default for most exercises.</> },
     aggressive: { label: "🔍 High-Stakes", tip: <><strong>High-Stakes</strong>Wrong decisions escalate the situation quickly and without mercy. Missed critical steps compound into visible, cascading failures.</> },
+  };
+  const TURN_PACE_INFO = {
+    relaxed: { label: "🐢 Relaxed", tip: <><strong>Relaxed (default: 6 turns)</strong>Gives the team more room to deliberate before the phase auto-advances. Good for newer teams or dense phases.</> },
+    standard: { label: "⏱️ Standard", tip: <><strong>Standard (default: 4 turns)</strong>Balanced pacing that fits most exercises — enough room to work a phase without stalling.</> },
+    tight: { label: "⚡ Tight", tip: <><strong>Tight (default: 2 turns)</strong>Forces rapid decisions. Best for experienced teams or time-boxed sessions.</> },
   };
   const FOCUS_TIPS = {
     "Technical": "Evaluates decisions around containment tooling, log analysis, forensic preservation, and technical IR procedures.",
@@ -785,6 +799,37 @@ function FacilitatorSettings({ config, onChange, scenario, playbook, participant
               <Tooltip>{tip}</Tooltip>
             </div>
           ))}
+        </div>
+      </div>
+
+      {/* TURN LIMIT PER PHASE */}
+      <div className="settings-row">
+        <div style={{ display: "flex", alignItems: "center", marginBottom: 6 }}>
+          <div className="settings-label" style={{ marginBottom: 0 }}>TURN LIMIT PER PHASE</div>
+          <Tooltip><strong>Turn Limit Per Phase</strong>Caps how many participant turns can occur before the phase automatically advances, so teams can't stall indefinitely in one phase. Each pace tier has a sensible default, which can be overridden.</Tooltip>
+        </div>
+        <div className="pill-group">
+          {Object.entries(TURN_PACE_INFO).map(([v, { label, tip }]) => (
+            <div key={v} style={{ display: "inline-flex", alignItems: "center" }}>
+              <div className={`pill${config.turnPace === v ? " active" : ""}`}
+                onClick={() => onChange({ ...config, turnPace: v, maxTurns: PACE_TURN_DEFAULTS[v] })}>{label}</div>
+              <Tooltip>{tip}</Tooltip>
+            </div>
+          ))}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10, flexWrap: "wrap" }}>
+          <label style={{ margin: 0, fontSize: 12, color: "#7a9ab5" }}>Max turns before auto-advance:</label>
+          <input type="number" min={1} max={20} value={config.maxTurns}
+            onChange={e => onChange({ ...config, maxTurns: Math.min(20, Math.max(1, parseInt(e.target.value, 10) || 1)) })}
+            style={{ width: 64, textAlign: "center" }} />
+          {config.maxTurns !== PACE_TURN_DEFAULTS[config.turnPace] && (
+            <button className="btn btn-ghost btn-sm" onClick={() => onChange({ ...config, maxTurns: PACE_TURN_DEFAULTS[config.turnPace] })}>
+              ↺ Reset to default ({PACE_TURN_DEFAULTS[config.turnPace]})
+            </button>
+          )}
+        </div>
+        <div style={{ marginTop: 6, fontSize: 11, color: "#2a4a6a" }}>
+          Default for {TURN_PACE_INFO[config.turnPace].label.replace(/^\S+\s/, "")}: {PACE_TURN_DEFAULTS[config.turnPace]} turns. Relaxed: 6 · Standard: 4 · Tight: 2. Custom values persist until reset.
         </div>
       </div>
 
@@ -864,7 +909,7 @@ function FacilitatorSettings({ config, onChange, scenario, playbook, participant
 }
 
 // Build system prompt from facilitator config
-function buildSystemPrompt(config, scenario, playbook, phase, participants) {
+function buildSystemPrompt(config, scenario, playbook, phase, participants, turnsInPhase = 0, maxTurns = config.maxTurns) {
   const toneMap = {
     professional: "formal and authoritative",
     conversational: "warm and approachable",
@@ -886,6 +931,7 @@ function buildSystemPrompt(config, scenario, playbook, phase, participants) {
   const custom = config.customInstructions.trim()
     ? `\n\nAdditional facilitator instructions:\n${config.customInstructions}`
     : "";
+  const turnBudget = `\n\nTURN BUDGET: This phase is capped at ${maxTurns} participant turn(s) (currently on turn ${Math.min(turnsInPhase + 1, maxTurns)} of ${maxTurns}). As the team approaches this limit, prioritize wrapping up — if objectives are reasonably met, append [ADVANCE_PHASE] rather than waiting for a perfect resolution. If the limit is reached without [ADVANCE_PHASE] having been used, the app will auto-advance the phase regardless.`;
 
   return `You are an expert cybersecurity tabletop exercise facilitator. Your role is to simulate a realistic incident and respond to the team's decisions — not to lead or prompt them.
 
@@ -918,7 +964,7 @@ MULTI-ROLE RESPONSES:
 
 Tone: ${toneMap[config.tone]}.
 Difficulty: ${diffMap[config.difficulty]}.
-Pacing: ${probMap[config.probing]}.${focus}${custom}`;
+Pacing: ${probMap[config.probing]}.${focus}${custom}${turnBudget}`;
 }
 
 // Format a set of simultaneous per-role responses into a single labeled block
@@ -2520,14 +2566,14 @@ function useChatStorage(session) {
     try {
       const raw = localStorage.getItem(key);
       if (!raw) return null;
-      return JSON.parse(raw); // { messages, timeline, phaseIdx, savedAt }
+      return JSON.parse(raw); // { messages, timeline, phaseIdx, turnsInPhase, savedAt }
     } catch { return null; }
   };
 
-  const save = (messages, timeline, phaseIdx, session) => {
+  const save = (messages, timeline, phaseIdx, session, turnsInPhase) => {
     try {
       localStorage.setItem(key, JSON.stringify({
-        messages, timeline, phaseIdx,
+        messages, timeline, phaseIdx, turnsInPhase,
         // Persist enough session metadata to reconstruct on resume
         sessionName: session?.sessionName,
         playbook: session?.playbook,
@@ -2541,7 +2587,7 @@ function useChatStorage(session) {
         try {
           const trimmed = messages.slice(-30);
           localStorage.setItem(key, JSON.stringify({
-            messages: trimmed, timeline, phaseIdx,
+            messages: trimmed, timeline, phaseIdx, turnsInPhase,
             sessionName: session?.sessionName,
             playbook: session?.playbook,
             participants: session?.participants,
@@ -2608,6 +2654,7 @@ function ExerciseView({ session, onEnd }) {
     : ["Preparation", "Detection & Analysis", "Containment", "Eradication", "Recovery", "Post-Incident"];
 
   const [phaseIdx, setPhaseIdx] = useState(0);
+  const [turnsInPhase, setTurnsInPhase] = useState(0);
   const [messages, setMessages] = useState([]);
   const [timeline, setTimeline] = useState([{ label: "Exercise started", detail: `${session.scenario.name} · ${playbook.name}`, time: new Date().toLocaleTimeString() }]);
   const [loading, setLoading] = useState(false);
@@ -2639,8 +2686,8 @@ function ExerciseView({ session, onEnd }) {
 
   // Persist to localStorage after every message or phase change
   useEffect(() => {
-    if (messages.length > 0) storage.save(messages, timeline, phaseIdx, session);
-  }, [messages, timeline, phaseIdx]);
+    if (messages.length > 0) storage.save(messages, timeline, phaseIdx, session, turnsInPhase);
+  }, [messages, timeline, phaseIdx, turnsInPhase]);
 
   // On mount: restore from resume data if passed, otherwise init fresh
   useEffect(() => {
@@ -2649,12 +2696,14 @@ function ExerciseView({ session, onEnd }) {
       setMessages(r.messages || []);
       setTimeline(r.timeline || [{ label: "Session resumed", detail: session.scenario.name, time: new Date().toLocaleTimeString() }]);
       setPhaseIdx(r.phaseIdx || 0);
+      setTurnsInPhase(r.turnsInPhase || 0);
     } else {
       initSession();
     }
   }, []);
 
-  const getSystemPrompt = () => buildSystemPrompt(facilitatorConfig, session.scenario, playbook, currentPhase, session.participants);
+  const getSystemPrompt = (turnOverride) =>
+    buildSystemPrompt(facilitatorConfig, session.scenario, playbook, currentPhase, session.participants, turnOverride ?? turnsInPhase, facilitatorConfig.maxTurns);
 
   const initSession = async () => {
     setLoading(true);
@@ -2698,10 +2747,15 @@ function ExerciseView({ session, onEnd }) {
     setMessages(updatedMessages);
     setTimeline(prev => [...prev, { label: `${author} responded`, detail: userText.slice(0, 70) + (userText.length > 70 ? "…" : ""), time: new Date().toLocaleTimeString() }]);
     setLoading(true);
+    const turnCount = turnsInPhase + 1;
+    setTurnsInPhase(turnCount);
     try {
       const history = await buildApiHistory(updatedMessages);
-      const text = await callClaude(history, getSystemPrompt());
+      const text = await callClaude(history, getSystemPrompt(turnCount));
       setMessages(prev => [...prev, { role: "ai", text, time: new Date().toLocaleTimeString() }]);
+      if (turnCount >= facilitatorConfig.maxTurns && phaseIdx < phases.length - 1) {
+        advancePhase(true);
+      }
     } catch {
       setMessages(prev => [...prev, { role: "ai", text: "Error. Please try again.", time: new Date().toLocaleTimeString() }]);
     }
@@ -2730,10 +2784,15 @@ function ExerciseView({ session, onEnd }) {
       })),
     ]);
     setLoading(true);
+    const turnCount = turnsInPhase + 1;
+    setTurnsInPhase(turnCount);
     try {
       const history = await buildApiHistory(updatedMessages);
-      const text = await callClaude(history, getSystemPrompt());
+      const text = await callClaude(history, getSystemPrompt(turnCount));
       setMessages(prev => [...prev, { role: "ai", text, time: new Date().toLocaleTimeString() }]);
+      if (turnCount >= facilitatorConfig.maxTurns && phaseIdx < phases.length - 1) {
+        advancePhase(true);
+      }
     } catch {
       setMessages(prev => [...prev, { role: "ai", text: "Error. Please try again.", time: new Date().toLocaleTimeString() }]);
     }
@@ -2749,12 +2808,22 @@ function ExerciseView({ session, onEnd }) {
     setTab("discussion");
   };
 
-  const advancePhase = () => {
+  const advancePhase = (auto = false) => {
     if (phaseIdx >= phases.length - 1) return;
     const next = phases[phaseIdx + 1];
     setPhaseIdx(i => i + 1);
-    setTimeline(prev => [...prev, { label: `Phase: ${next}`, time: new Date().toLocaleTimeString() }]);
-    setMessages(prev => [...prev, { role: "ai", text: `Moving into the **${next}** phase. What are your team's priorities and immediate actions at this stage?`, time: new Date().toLocaleTimeString() }]);
+    setTurnsInPhase(0);
+    setTimeline(prev => [...prev, {
+      label: auto ? `Phase auto-advanced: ${next} (turn limit reached)` : `Phase: ${next}`,
+      time: new Date().toLocaleTimeString(),
+    }]);
+    setMessages(prev => [...prev, {
+      role: "ai",
+      text: auto
+        ? `⏱️ Turn limit reached for this phase. Moving into the **${next}** phase. What are your team's priorities and immediate actions at this stage?`
+        : `Moving into the **${next}** phase. What are your team's priorities and immediate actions at this stage?`,
+      time: new Date().toLocaleTimeString(),
+    }]);
   };
 
   return (
@@ -2773,10 +2842,13 @@ function ExerciseView({ session, onEnd }) {
           >✕ End Early</button>
           {/* Next Phase / Complete */}
           {phaseIdx < phases.length - 1
-            ? <button className="btn btn-ghost btn-sm" style={{ margin: "8px 0" }} onClick={advancePhase}>Next Phase →</button>
+            ? <button className="btn btn-ghost btn-sm" style={{ margin: "8px 0" }} onClick={() => advancePhase(false)}>Next Phase →</button>
             : <button className="btn btn-success btn-sm" style={{ margin: "8px 0" }} onClick={() => setConfirmModal("complete")}>Complete Exercise ✓</button>}
         </div>
         <div style={{ padding: "10px 24px 12px", background: "#0a0f18" }}>
+          <div style={{ fontSize: 11, color: turnsInPhase >= facilitatorConfig.maxTurns - 1 ? "#f87171" : "#4a6a8a", fontFamily: "'Share Tech Mono', monospace", marginBottom: 8 }}>
+            Turn {Math.min(turnsInPhase + (phaseIdx < phases.length - 1 ? 1 : 0), facilitatorConfig.maxTurns)} of {facilitatorConfig.maxTurns} this phase
+          </div>
           <div className="phases">
             {phases.map((p, i) => (
               <div key={i} className={`phase-item${i === phaseIdx ? " active" : i < phaseIdx ? " done" : ""}`}>
@@ -2801,7 +2873,7 @@ function ExerciseView({ session, onEnd }) {
               messages={messages}
               onMessage={sendMessage}
               loading={loading}
-              onAdvancePhase={advancePhase}
+              onAdvancePhase={() => advancePhase(false)}
               isLastPhase={phaseIdx >= phases.length - 1}
               participants={session.participants}
               multiMode={multiMode}
