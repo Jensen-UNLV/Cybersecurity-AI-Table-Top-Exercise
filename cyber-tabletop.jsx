@@ -909,7 +909,7 @@ function FacilitatorSettings({ config, onChange, scenario, playbook, participant
 }
 
 // Build system prompt from facilitator config
-function buildSystemPrompt(config, scenario, playbook, phase, participants, turnsInPhase = 0, maxTurns = config.maxTurns) {
+function buildSystemPrompt(config, scenario, playbook, phase, participants, turnNumber = 0, maxTurns = config.maxTurns, nextPhase = null, isLastPhase = false) {
   const toneMap = {
     professional: "formal and authoritative",
     conversational: "warm and approachable",
@@ -931,7 +931,25 @@ function buildSystemPrompt(config, scenario, playbook, phase, participants, turn
   const custom = config.customInstructions.trim()
     ? `\n\nAdditional facilitator instructions:\n${config.customInstructions}`
     : "";
-  const turnBudget = `\n\nTURN BUDGET: This phase is capped at ${maxTurns} participant turn(s) (currently on turn ${Math.min(turnsInPhase + 1, maxTurns)} of ${maxTurns}). As the team approaches this limit, prioritize wrapping up — if objectives are reasonably met, append [ADVANCE_PHASE] rather than waiting for a perfect resolution. If the limit is reached without [ADVANCE_PHASE] having been used, the app will auto-advance the phase regardless.`;
+
+  // displayTurn: the turn number about to be (or just was) used, clamped for display purposes.
+  const displayTurn = Math.max(1, Math.min(turnNumber, maxTurns));
+  let turnBudget = `\n\nTURN BUDGET: This phase is capped at ${maxTurns} participant turn(s) (currently on turn ${displayTurn} of ${maxTurns}).`;
+
+  if (isLastPhase) {
+    // No further phase to transition into — don't reference auto-advance at all.
+    turnBudget += ` This is the final phase of the exercise, so there is no further phase to advance to — focus on helping the team reach a resolution.`;
+  } else if (nextPhase && turnNumber >= maxTurns) {
+    // FINAL TURN: the app will silently advance phaseIdx right after this response.
+    // The AI's own narration IS the transition — no separate app message will follow.
+    turnBudget += ` This is the FINAL turn for this phase — the app will advance to the **${nextPhase}** phase immediately after this response, regardless of what you write. Do NOT close with a generic action-inviting question about the current phase, and do NOT append [ADVANCE_PHASE] — the app is handling this transition directly, not you. Instead: briefly resolve or acknowledge the team's last action, then narrate the situation naturally shifting into the ${nextPhase} phase — describe what changes or what new information emerges as it begins — and end with a single action-inviting question suited to the ${nextPhase} phase. Do not mention turn limits, caps, or the app's mechanics to the team; narrate the shift purely as an in-world development, the way a real incident would evolve.`;
+  } else if (nextPhase && turnNumber === maxTurns - 1) {
+    // TELEGRAPH: one turn remaining — begin steering toward a natural wrap-up so the
+    // eventual transition (next message) doesn't feel abrupt.
+    turnBudget += ` The team has one turn remaining before this phase advances to **${nextPhase}**. Do not mention turn counts or limits to the team, but begin subtly steering the scene toward wrapping up this phase's key objectives so the eventual transition feels earned rather than abrupt.`;
+  } else {
+    turnBudget += ` As the team approaches this limit, prioritize wrapping up — if objectives are reasonably met, append [ADVANCE_PHASE] rather than waiting for a perfect resolution. If the limit is reached without [ADVANCE_PHASE] having been used, the app will auto-advance the phase regardless.`;
+  }
 
   return `You are an expert cybersecurity tabletop exercise facilitator. Your role is to simulate a realistic incident and respond to the team's decisions — not to lead or prompt them.
 
@@ -1753,10 +1771,10 @@ function AIChat({ scenario, phase, messages, onMessage, loading, onAdvancePhase,
     }
   }, [showOptions]);
 
-  const send = (text) => {
+  const send = (text, countsAsTurn = true) => {
     const msg = text ?? input;
     if (!msg.trim() || loading) return;
-    onMessage(msg);
+    onMessage(msg, countsAsTurn);
     setInput("");
   };
 
@@ -1765,7 +1783,7 @@ function AIChat({ scenario, phase, messages, onMessage, loading, onAdvancePhase,
     // Preserve "both-unlocked" across real sends — only reset hint-used states
     setHintState(s => s === "both-unlocked" ? "both-unlocked" : "none");
     setSelectedOption(null);
-    send(input);
+    send(input); // a real team action — counts toward the turn limit
   };
 
   const handleOptionSubmit = () => {
@@ -1773,13 +1791,13 @@ function AIChat({ scenario, phase, messages, onMessage, loading, onAdvancePhase,
     setHintState("both-unlocked");
     setSelectedOption(null);
     window.scrollTo({ top: 0, behavior: "smooth" });
-    send(`${selectedOption.label}: ${selectedOption.text}`);
+    send(`${selectedOption.label}: ${selectedOption.text}`); // the team's chosen action — counts toward the turn limit
   };
 
   const handleHint = () => {
     setHintState(s => s === "both-unlocked" ? "both-unlocked" : "hint-used");
     setSelectedOption(null);
-    send("We're not sure what to do next — can we get a hint?");
+    send("We're not sure what to do next — can we get a hint?", false); // meta request, not a response to the scenario — does not count
   };
 
   const handleOptions = () => {
@@ -1787,7 +1805,7 @@ function AIChat({ scenario, phase, messages, onMessage, loading, onAdvancePhase,
     // Subsequent times (both-unlocked): keep both-unlocked but still request options.
     setHintState(s => s === "both-unlocked" ? "both-unlocked" : "options-used");
     setSelectedOption(null);
-    send("We're still stuck — please show us multiple choice options.");
+    send("We're still stuck — please show us multiple choice options.", false); // meta request, not a response to the scenario — does not count
   };
 
   return (
@@ -2666,6 +2684,8 @@ function ExerciseView({ session, onEnd }) {
   const storage = useChatStorage(session);
 
   const currentPhase = phases[phaseIdx];
+  const isLastPhase = phaseIdx >= phases.length - 1;
+  const nextPhase = isLastPhase ? null : phases[phaseIdx + 1];
   const phaseGuidance = [
     "Confirm roles, channels, and tools. Ensure the playbook is accessible.",
     "Identify indicators of compromise. Classify severity. Notify stakeholders. Preserve evidence.",
@@ -2703,7 +2723,7 @@ function ExerciseView({ session, onEnd }) {
   }, []);
 
   const getSystemPrompt = (turnOverride) =>
-    buildSystemPrompt(facilitatorConfig, session.scenario, playbook, currentPhase, session.participants, turnOverride ?? turnsInPhase, facilitatorConfig.maxTurns);
+    buildSystemPrompt(facilitatorConfig, session.scenario, playbook, currentPhase, session.participants, turnOverride ?? turnsInPhase, facilitatorConfig.maxTurns, nextPhase, isLastPhase);
 
   const initSession = async () => {
     setLoading(true);
@@ -2739,7 +2759,7 @@ function ExerciseView({ session, onEnd }) {
     }));
   };
 
-  const sendMessage = async (userText) => {
+  const sendMessage = async (userText, countsAsTurn = true) => {
     const participant = session.participants[0];
     const author = participant?.name || participant?.role || "Participant";
     const userMsg = { role: "user", author, text: userText, time: new Date().toLocaleTimeString() };
@@ -2747,13 +2767,14 @@ function ExerciseView({ session, onEnd }) {
     setMessages(updatedMessages);
     setTimeline(prev => [...prev, { label: `${author} responded`, detail: userText.slice(0, 70) + (userText.length > 70 ? "…" : ""), time: new Date().toLocaleTimeString() }]);
     setLoading(true);
-    const turnCount = turnsInPhase + 1;
-    setTurnsInPhase(turnCount);
+    // Hint/options requests are meta requests, not responses to the scenario — they don't consume a turn
+    const turnCount = countsAsTurn ? turnsInPhase + 1 : turnsInPhase;
+    if (countsAsTurn) setTurnsInPhase(turnCount);
     try {
       const history = await buildApiHistory(updatedMessages);
       const text = await callClaude(history, getSystemPrompt(turnCount));
       setMessages(prev => [...prev, { role: "ai", text, time: new Date().toLocaleTimeString() }]);
-      if (turnCount >= facilitatorConfig.maxTurns && phaseIdx < phases.length - 1) {
+      if (countsAsTurn && turnCount >= facilitatorConfig.maxTurns && phaseIdx < phases.length - 1) {
         advancePhase(true);
       }
     } catch {
@@ -2817,13 +2838,18 @@ function ExerciseView({ session, onEnd }) {
       label: auto ? `Phase auto-advanced: ${next} (turn limit reached)` : `Phase: ${next}`,
       time: new Date().toLocaleTimeString(),
     }]);
-    setMessages(prev => [...prev, {
-      role: "ai",
-      text: auto
-        ? `⏱️ Turn limit reached for this phase. Moving into the **${next}** phase. What are your team's priorities and immediate actions at this stage?`
-        : `Moving into the **${next}** phase. What are your team's priorities and immediate actions at this stage?`,
-      time: new Date().toLocaleTimeString(),
-    }]);
+    // Manual/AI-suggested advances (button click) have no prior AI narration of the
+    // transition, so post a short transition message. Auto-advances (turn limit reached)
+    // rely on the facilitator's own final-turn response — generated per the FINAL TURN
+    // instruction in buildSystemPrompt — to have already narrated the shift, so no
+    // second message is posted here.
+    if (!auto) {
+      setMessages(prev => [...prev, {
+        role: "ai",
+        text: `Moving into the **${next}** phase. What are your team's priorities and immediate actions at this stage?`,
+        time: new Date().toLocaleTimeString(),
+      }]);
+    }
   };
 
   return (
