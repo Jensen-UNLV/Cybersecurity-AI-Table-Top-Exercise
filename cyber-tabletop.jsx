@@ -429,11 +429,6 @@ const FontStyle = () => (
     }
     .msg-action-btn:hover { border-color: #ca8a04; color: #fbbf24; background: rgba(202,138,4,0.08); }
     .msg-action-btn.options-btn:hover { border-color: #60a5fa; color: #93c5fd; background: rgba(29,78,216,0.1); }
-    .msg-action-btn.advance-btn {
-      border-color: rgba(34,197,94,0.4); color: #4ade80;
-      background: rgba(22,163,74,0.08);
-    }
-    .msg-action-btn.advance-btn:hover { border-color: #22c55e; color: #86efac; background: rgba(22,163,74,0.15); }
     /* Multiple choice option buttons */
     .mc-options { display: flex; flex-direction: column; gap: 8px; }
     .mc-option {
@@ -708,7 +703,7 @@ function Tooltip({ children }) {
 }
 
 // ── Facilitator Settings ──────────────────────────────────────
-function FacilitatorSettings({ config, onChange, scenario, playbook, participants }) {
+function FacilitatorSettings({ config, onChange, scenario, playbook, participants, mystery }) {
   const FOCUS_AREAS = ["Technical", "Legal / Compliance", "Communications", "Executive Decision-Making", "Vendor Management"];
   const toggle = (arr, val) => arr.includes(val) ? arr.filter(x => x !== val) : [...arr, val];
   const [showPrompt, setShowPrompt] = useState(false);
@@ -720,7 +715,10 @@ function FacilitatorSettings({ config, onChange, scenario, playbook, participant
     "[Current Phase]",
     participants || [{ name: "", role: "[Role]" }],
     0,
-    config.maxTurns
+    config.maxTurns,
+    null,
+    false,
+    mystery
   );
 
   const TONE_INFO = {
@@ -909,7 +907,7 @@ function FacilitatorSettings({ config, onChange, scenario, playbook, participant
 }
 
 // Build system prompt from facilitator config
-function buildSystemPrompt(config, scenario, playbook, phase, participants, turnNumber = 0, maxTurns = config.maxTurns, nextPhase = null, isLastPhase = false) {
+function buildSystemPrompt(config, scenario, playbook, phase, participants, turnNumber = 0, maxTurns = config.maxTurns, nextPhase = null, isLastPhase = false, mystery = false) {
   const toneMap = {
     professional: "formal and authoritative",
     conversational: "warm and approachable",
@@ -942,14 +940,22 @@ function buildSystemPrompt(config, scenario, playbook, phase, participants, turn
   } else if (nextPhase && turnNumber >= maxTurns) {
     // FINAL TURN: the app will silently advance phaseIdx right after this response.
     // The AI's own narration IS the transition — no separate app message will follow.
-    turnBudget += ` This is the FINAL turn for this phase — the app will advance to the **${nextPhase}** phase immediately after this response, regardless of what you write. Do NOT close with a generic action-inviting question about the current phase, and do NOT append [ADVANCE_PHASE] — the app is handling this transition directly, not you. Instead: briefly resolve or acknowledge the team's last action, then narrate the situation naturally shifting into the ${nextPhase} phase — describe what changes or what new information emerges as it begins — and end with a single action-inviting question suited to the ${nextPhase} phase. Do not mention turn limits, caps, or the app's mechanics to the team; narrate the shift purely as an in-world development, the way a real incident would evolve.`;
+    // IMPORTANT: at generation time the phase has NOT changed yet — this response is
+    // still, technically, the last response of the CURRENT phase. Frame the shift as
+    // imminent/in-progress, not as an already-completed fact, or it reads as premature.
+    turnBudget += ` This is the FINAL turn for this phase — the app will advance to the **${nextPhase}** phase immediately after this response, regardless of what you write. Do NOT close with a generic action-inviting question about the current phase. Instead: briefly resolve or acknowledge the team's last action in this phase, then narrate the team's focus naturally turning toward ${nextPhase} as a direct consequence of what just happened — describe what's now coming into view or what new question the team must confront — and end with a single action-inviting question suited to that pivot. Frame this as the team's attention SHIFTING TOWARD ${nextPhase}, not as though ${nextPhase} has already fully started — avoid declarative phrasing like "[Phase] begins now" or "[Phase] has begun"; this response is still closing out the current phase, even as it points toward what's next. Do not mention turn limits, caps, or the app's mechanics to the team; narrate the pivot purely as an in-world development, the way a real incident naturally evolves from one stage to the next.`;
   } else if (nextPhase && turnNumber === maxTurns - 1) {
     // TELEGRAPH: one turn remaining — begin steering toward a natural wrap-up so the
-    // eventual transition (next message) doesn't feel abrupt.
-    turnBudget += ` The team has one turn remaining before this phase advances to **${nextPhase}**. Do not mention turn counts or limits to the team, but begin subtly steering the scene toward wrapping up this phase's key objectives so the eventual transition feels earned rather than abrupt.`;
+    // eventual transition (next message) doesn't feel abrupt. Deliberately omit the next
+    // phase's name here so the model has no material to prematurely announce it early.
+    turnBudget += ` The team has one turn remaining in this phase before it naturally moves forward. Do not mention turn counts, limits, or name the upcoming phase yet — simply begin steering the scene toward wrapping up this phase's key objectives so the eventual transition feels earned rather than abrupt.`;
   } else {
-    turnBudget += ` As the team approaches this limit, prioritize wrapping up — if objectives are reasonably met, append [ADVANCE_PHASE] rather than waiting for a perfect resolution. If the limit is reached without [ADVANCE_PHASE] having been used, the app will auto-advance the phase regardless.`;
+    turnBudget += ` As the team approaches this limit, prioritize wrapping up. If the limit is reached, the app will auto-advance the phase regardless.`;
   }
+
+  const mysteryBlock = mystery
+    ? `\n\nMYSTERY SCENARIO: The team has NOT been told what type of incident this is — that's the point of the exercise. Never state, name, or directly hint at the scenario's category or title (e.g. do not say or imply "ransomware," "DDoS," "insider threat," "phishing," "business email compromise," "data exfiltration," "supply chain compromise," or the scenario's title "${scenario.name}") anywhere in your response, including the opening scene-setting message. Describe only the technical symptoms, indicators, and consequences the team would actually observe, and let them diagnose the incident type themselves through their own investigation and playbook knowledge. If and only if the team correctly identifies the incident type through their own actions or reasoning, you may confirm it naturally as the scenario progresses — never volunteer it first.`
+    : "";
 
   return `You are an expert cybersecurity tabletop exercise facilitator. Your role is to simulate a realistic incident and respond to the team's decisions — not to lead or prompt them.
 
@@ -965,7 +971,6 @@ CORE BEHAVIOR:
 - Never volunteer the right answer. Never ask "have you considered X?" unless they have explicitly asked for a hint.
 - Keep responses under 150 words unless delivering a major scenario development.
 - End EVERY response with a single short line on its own that invites action — e.g. "What is your team's next action?" or "How does your team respond?" or "The clock is ticking — what do you do?" Vary the phrasing; never repeat the same closing line twice in a row.
-- When the team has sufficiently addressed the key objectives of the current phase — demonstrated sound decision-making, covered the critical steps, and shown readiness to move forward — append the exact marker [ADVANCE_PHASE] on its own line at the very end of your response (after the closing action question). Do not append it prematurely; only when the phase is genuinely complete. Do not explain or mention the marker — the app handles it silently. If the team continues discussing after you have already suggested advancing, you may repeat the [ADVANCE_PHASE] marker in subsequent responses if the phase objectives remain met.
 
 HINT MODE:
 - If a participant explicitly asks for a hint, help, direction, or says they are stuck, briefly shift into hint mode: acknowledge the request, then offer one directional nudge grounded in ${playbook.name} — not the answer, just a pointer toward the right area of thinking. Return to observer mode immediately after.
@@ -982,7 +987,7 @@ MULTI-ROLE RESPONSES:
 
 Tone: ${toneMap[config.tone]}.
 Difficulty: ${diffMap[config.difficulty]}.
-Pacing: ${probMap[config.probing]}.${focus}${custom}${turnBudget}`;
+Pacing: ${probMap[config.probing]}.${focus}${custom}${turnBudget}${mysteryBlock}`;
 }
 
 // Format a set of simultaneous per-role responses into a single labeled block
@@ -1457,9 +1462,19 @@ function ParticipantSetup({ onStart, lastPlayed }) {
                 <div style={{ flex: 1 }}>
                   <label>Scenario</label>
                   <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 12px", background: "#070d18", borderRadius: 6, border: "1px solid #1a2a3a", height: 38 }}>
-                    <span style={{ fontSize: 16 }}>{selected.scenario?.icon}</span>
-                    <span style={{ fontSize: 13, color: "#c9d4e0", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{selected.scenario?.name}</span>
-                    <span className={`badge badge-severity-${selected.scenario?.severity}`} style={{ flexShrink: 0 }}>{selected.scenario?.severity}</span>
+                    {usedRandomizer ? (
+                      <>
+                        <span style={{ fontSize: 16 }}>🎲</span>
+                        <span style={{ fontSize: 13, color: "#c9d4e0", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>Mystery Scenario</span>
+                        <span className="tag" style={{ flexShrink: 0, background: "rgba(124,58,237,0.15)", color: "#a78bfa", border: "1px solid rgba(124,58,237,0.3)" }}>Randomized</span>
+                      </>
+                    ) : (
+                      <>
+                        <span style={{ fontSize: 16 }}>{selected.scenario?.icon}</span>
+                        <span style={{ fontSize: 13, color: "#c9d4e0", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{selected.scenario?.name}</span>
+                        <span className={`badge badge-severity-${selected.scenario?.severity}`} style={{ flexShrink: 0 }}>{selected.scenario?.severity}</span>
+                      </>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1555,6 +1570,7 @@ function ParticipantSetup({ onStart, lastPlayed }) {
                 scenario={selected.scenario}
                 playbook={selected.playbook}
                 participants={selected.participants.filter(p => p.active)}
+                mystery={usedRandomizer}
               />
               <hr className="divider" />
               <div style={{ fontSize: 12, color: "#2a4a6a", lineHeight: 1.7 }}>
@@ -1654,8 +1670,9 @@ function stripOptions(text) {
     .trim();
 }
 
-// Detect and strip [ADVANCE_PHASE] marker from an AI message
-function hasAdvancePhase(text) { return /\[ADVANCE_PHASE\]/i.test(text); }
+// Defensive strip in case a stray [ADVANCE_PHASE] marker leaks through — the model is no
+// longer instructed to emit it (the in-chat advance button was removed; only the app-driven
+// turn-limit auto-advance and the manual "Next Phase" button now change phases).
 function stripAdvancePhase(text) { return text.replace(/\[ADVANCE_PHASE\]/gi, "").replace(/\n{3,}/g, "\n\n").trim(); }
 
 // ── Multi-Role Response Round ─────────────────────────────────
@@ -1720,9 +1737,9 @@ function MultiRoleMessageGroup({ msg }) {
   );
 }
 
-function AIChat({ scenario, phase, messages, onMessage, loading, onAdvancePhase, isLastPhase, participants, multiMode, onToggleMultiMode, onMultiSend, hideScenarioName }) {
+function AIChat({ scenario, phase, messages, onMessage, loading, participants, multiMode, onToggleMultiMode, onMultiSend, hideScenarioName }) {
   const [input, setInput] = useState("");
-  const [hintState, setHintState] = useState("none");
+  const [optionsRequested, setOptionsRequested] = useState(false);
   const [selectedOption, setSelectedOption] = useState(null);
   const chatAreaRef = useRef(null);
   const lastAiMsgRef = useRef(null);
@@ -1731,28 +1748,8 @@ function AIChat({ scenario, phase, messages, onMessage, loading, onAdvancePhase,
   // Derive these before effects so they're in scope
   const lastMsg = messages.length > 0 ? messages[messages.length - 1] : null;
   const isLastAI = lastMsg?.role === "ai";
-  const currentOptions = ((hintState === "options-used" || hintState === "both-unlocked") && isLastAI)
-    ? parseOptions(lastMsg.text)
-    : [];
+  const currentOptions = (optionsRequested && isLastAI) ? parseOptions(lastMsg.text) : [];
   const showOptions = currentOptions.length > 0;
-  const bothUnlocked = hintState === "both-unlocked" ||
-    (hintState === "options-used" && isLastAI && currentOptions.length === 0);
-
-  // Track whether [ADVANCE_PHASE] has been suggested for the current phase.
-  // Once suggested, keep the button visible until the user clicks it or the phase advances.
-  const [phaseAdvanceSuggested, setPhaseAdvanceSuggested] = useState(false);
-
-  // Set flag when any AI message in this phase contains [ADVANCE_PHASE]
-  useEffect(() => {
-    if (isLastAI && !isLastPhase && hasAdvancePhase(lastMsg.text)) {
-      setPhaseAdvanceSuggested(true);
-    }
-  }, [messages]);
-
-  // Reset when the phase changes (parent prop update signals a new phase)
-  useEffect(() => {
-    setPhaseAdvanceSuggested(false);
-  }, [phase]);
 
   // When a new AI message arrives, scroll its top into view inside the chat area
   useEffect(() => {
@@ -1780,30 +1777,27 @@ function AIChat({ scenario, phase, messages, onMessage, loading, onAdvancePhase,
 
   const handleRealSend = () => {
     if (!input.trim() || loading) return;
-    // Preserve "both-unlocked" across real sends — only reset hint-used states
-    setHintState(s => s === "both-unlocked" ? "both-unlocked" : "none");
+    setOptionsRequested(false);
     setSelectedOption(null);
     send(input); // a real team action — counts toward the turn limit
   };
 
   const handleOptionSubmit = () => {
     if (!selectedOption || loading) return;
-    setHintState("both-unlocked");
+    setOptionsRequested(false);
     setSelectedOption(null);
     window.scrollTo({ top: 0, behavior: "smooth" });
     send(`${selectedOption.label}: ${selectedOption.text}`); // the team's chosen action — counts toward the turn limit
   };
 
   const handleHint = () => {
-    setHintState(s => s === "both-unlocked" ? "both-unlocked" : "hint-used");
+    setOptionsRequested(false);
     setSelectedOption(null);
     send("We're not sure what to do next — can we get a hint?", false); // meta request, not a response to the scenario — does not count
   };
 
   const handleOptions = () => {
-    // First time: set options-used so we parse options from the response.
-    // Subsequent times (both-unlocked): keep both-unlocked but still request options.
-    setHintState(s => s === "both-unlocked" ? "both-unlocked" : "options-used");
+    setOptionsRequested(true);
     setSelectedOption(null);
     send("We're still stuck — please show us multiple choice options.", false); // meta request, not a response to the scenario — does not count
   };
@@ -1859,27 +1853,17 @@ function AIChat({ scenario, phase, messages, onMessage, loading, onAdvancePhase,
         )}
       </div>
 
-      {/* Hint / options / advance action buttons */}
+      {/* Hint / options action buttons — both offered together, no sequencing required */}
       {isLastAI && !loading && !showOptions && (
         <div className="msg-actions" style={{ padding: "8px 0 0" }}>
-          {(hintState === "none" || bothUnlocked) && (
-            <button className="msg-action-btn" onClick={handleHint}
-              title="Ask the facilitator for a directional nudge without giving away the answer">
-              💡 Ask for a hint
-            </button>
-          )}
-          {(hintState === "hint-used" || bothUnlocked) && (
-            <button className="msg-action-btn options-btn" onClick={handleOptions}
-              title="Ask the facilitator to present multiple choice options">
-              🔀 Still stuck? Ask for options
-            </button>
-          )}
-          {phaseAdvanceSuggested && !isLastPhase && (
-            <button className="msg-action-btn advance-btn" onClick={onAdvancePhase}
-              title="The AI facilitator suggests the team is ready to move to the next phase">
-              ✅ Advance to next phase
-            </button>
-          )}
+          <button className="msg-action-btn" onClick={handleHint}
+            title="Ask the facilitator for a directional nudge without giving away the answer">
+            💡 Ask for a hint
+          </button>
+          <button className="msg-action-btn options-btn" onClick={handleOptions}
+            title="Ask the facilitator to present multiple choice options">
+            🔀 Ask for options
+          </button>
         </div>
       )}
 
@@ -2004,7 +1988,7 @@ function CustomInject({ onInject }) {
 // ── After-Action Report ───────────────────────────────────────
 function AARView({ session, timeline, messages, duration, onNewScenario }) {
   const [aarData, setAarData] = useState(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const printRef = useRef();
 
   const fmt = s => s > 0
@@ -2079,6 +2063,11 @@ Return this exact JSON shape with no other text:
     }
     setLoading(false);
   };
+
+  // Auto-generate the report as soon as the AAR view loads — no user action required.
+  useEffect(() => {
+    generate();
+  }, []);
 
   const handlePrint = () => {
     // Build a self-contained HTML page for the report and open it in a new tab.
@@ -2240,9 +2229,6 @@ Return this exact JSON shape with no other text:
           </div>
           <div className="no-print" style={{ display: "flex", gap: 8, flexShrink: 0 }}>
             <button className="btn btn-ghost btn-sm" onClick={handlePrint} title="Print or save as PDF">🖨 Print / PDF</button>
-            <button className="btn btn-primary" onClick={generate} disabled={loading}>
-              {loading ? <><span className="spinner" /> Generating…</> : aarData ? "↺ Regenerate" : "✦ Generate Report"}
-            </button>
           </div>
         </div>
 
@@ -2278,16 +2264,6 @@ Return this exact JSON shape with no other text:
             ))}
           </div>
         </div>
-
-        {/* No report yet */}
-        {!aarData && !loading && (
-          <div className="card no-print" style={{ textAlign: "center", padding: "48px 20px" }}>
-            <div style={{ fontSize: 40, marginBottom: 12 }}>📋</div>
-            <div style={{ color: "#c9d4e0", fontSize: 15, fontWeight: 600, marginBottom: 6 }}>Ready to Generate</div>
-            <div style={{ color: "#3a5a7a", fontSize: 13, marginBottom: 20 }}>Click "Generate Report" to create a structured after-action report.</div>
-            <button className="btn btn-primary" onClick={generate}>✦ Generate Report</button>
-          </div>
-        )}
 
         {/* Skeleton loading state */}
         {loading && (
@@ -2552,6 +2528,18 @@ const getInjectClosing = (color) => {
 const storageKey = (session) =>
   `tactician:${session.sessionName}:${session.scenario.id}`.replace(/\s+/g, "_").slice(0, 120);
 
+// Remove every other saved-in-progress session key, keeping only (optionally) the one
+// belonging to a just-launched session. Called at the moment a new exercise actually
+// launches — not when a resume prompt is merely declined — so a declined/abandoned
+// session remains resumable until the person commits to a genuinely new exercise.
+const clearOtherSessions = (keepKey = null) => {
+  try {
+    Object.keys(localStorage)
+      .filter(k => k.startsWith("tactician:") && k !== LAST_PLAYED_KEY && k !== keepKey)
+      .forEach(k => localStorage.removeItem(k));
+  } catch { /* silent */ }
+};
+
 const LAST_PLAYED_KEY = "tactician:lastPlayed";
 
 const lastPlayedStorage = {
@@ -2597,6 +2585,7 @@ function useChatStorage(session) {
         playbook: session?.playbook,
         participants: session?.participants,
         facilitatorConfig: session?.facilitatorConfig,
+        usedRandomizer: session?.usedRandomizer,
         savedAt: new Date().toISOString(),
       }));
     } catch (e) {
@@ -2610,6 +2599,7 @@ function useChatStorage(session) {
             playbook: session?.playbook,
             participants: session?.participants,
             facilitatorConfig: session?.facilitatorConfig,
+            usedRandomizer: session?.usedRandomizer,
             savedAt: new Date().toISOString(),
           }));
         } catch { /* silent */ }
@@ -2723,18 +2713,27 @@ function ExerciseView({ session, onEnd }) {
   }, []);
 
   const getSystemPrompt = (turnOverride) =>
-    buildSystemPrompt(facilitatorConfig, session.scenario, playbook, currentPhase, session.participants, turnOverride ?? turnsInPhase, facilitatorConfig.maxTurns, nextPhase, isLastPhase);
+    buildSystemPrompt(facilitatorConfig, session.scenario, playbook, currentPhase, session.participants, turnOverride ?? turnsInPhase, facilitatorConfig.maxTurns, nextPhase, isLastPhase, session.usedRandomizer);
 
   const initSession = async () => {
     setLoading(true);
     try {
+      const openingInstruction = session.usedRandomizer
+        ? `Begin the tabletop exercise. Set the scene in 2-3 paragraphs: describe the initial indicators of compromise consistent with this incident, using specific, realistic technical details and a timeline — but do NOT name or hint at the scenario's category or title anywhere in your response (per the MYSTERY SCENARIO instruction). Orient the team to the ${phases[0]} phase of ${playbook.name}. End by stating the situation as it currently stands — do not ask a question or suggest what the team should do. Wait for them to act.`
+        : `Begin the tabletop exercise. Set the scene in 2-3 paragraphs: describe the initial indicators of compromise for ${session.scenario.name} with specific, realistic technical details and timeline. Orient the team to the ${phases[0]} phase of ${playbook.name}. End by stating the situation as it currently stands — do not ask a question or suggest what the team should do. Wait for them to act.`;
       const text = await callClaude(
-        [{ role: "user", content: `Begin the tabletop exercise. Set the scene in 2-3 paragraphs: describe the initial indicators of compromise for ${session.scenario.name} with specific, realistic technical details and timeline. Orient the team to the ${phases[0]} phase of ${playbook.name}. End by stating the situation as it currently stands — do not ask a question or suggest what the team should do. Wait for them to act.` }],
+        [{ role: "user", content: openingInstruction }],
         getSystemPrompt()
       );
       setMessages([{ role: "ai", text, time: new Date().toLocaleTimeString() }]);
     } catch {
-      setMessages([{ role: "ai", text: `Exercise initiated. Begin discussing your initial response to: ${session.scenario.description}`, time: new Date().toLocaleTimeString() }]);
+      setMessages([{
+        role: "ai",
+        text: session.usedRandomizer
+          ? `Exercise initiated. Indicators of a security incident have been detected. Begin discussing your team's initial response.`
+          : `Exercise initiated. Begin discussing your initial response to: ${session.scenario.description}`,
+        time: new Date().toLocaleTimeString(),
+      }]);
     }
     setLoading(false);
   };
@@ -2899,8 +2898,6 @@ function ExerciseView({ session, onEnd }) {
               messages={messages}
               onMessage={sendMessage}
               loading={loading}
-              onAdvancePhase={() => advancePhase(false)}
-              isLastPhase={phaseIdx >= phases.length - 1}
               participants={session.participants}
               multiMode={multiMode}
               onToggleMultiMode={() => setMultiMode(v => !v)}
@@ -3017,6 +3014,7 @@ function ExerciseView({ session, onEnd }) {
                 scenario={session.scenario}
                 playbook={session.playbook}
                 participants={session.participants}
+                mystery={session.usedRandomizer}
               />
             </div>
           </div>
@@ -3075,11 +3073,15 @@ export default function App() {
   }, []);
 
   const handleBegin = () => {
-    // Check for an active unfinished session
+    // Check for an active unfinished session. Sort by savedAt (most recent first) in case
+    // more than one stale session key exists — e.g. leftovers from before this cleanup
+    // logic existed — so the most recently active one is what gets offered for resume.
     const allKeys = Object.keys(localStorage).filter(k => k.startsWith("tactician:") && k !== LAST_PLAYED_KEY);
-    const found = allKeys.map(k => {
+    const candidates = allKeys.map(k => {
       try { return { key: k, ...JSON.parse(localStorage.getItem(k)) }; } catch { return null; }
-    }).filter(Boolean).find(s => s.messages?.length > 0);
+    }).filter(Boolean).filter(s => s.messages?.length > 0);
+    candidates.sort((a, b) => new Date(b.savedAt || 0) - new Date(a.savedAt || 0));
+    const found = candidates[0];
 
     if (found) {
       setSavedSession(found);
@@ -3113,6 +3115,7 @@ export default function App() {
       participants: savedSession.participants || [{ role: "Facilitator", name: "", id: "Facilitator", active: true }],
       sessionName: savedSession.sessionName || keyParts.slice(0, -1).join(" "),
       facilitatorConfig: savedSession.facilitatorConfig || { ...DEFAULT_FACILITATOR },
+      usedRandomizer: !!savedSession.usedRandomizer,
       _resumeData: savedSession,
     };
     setSession(restoredSession);
@@ -3128,6 +3131,11 @@ export default function App() {
   };
 
   const handleStart = (s) => {
+    // A new exercise is genuinely launching now — this is the point of no return for any
+    // previously declined/abandoned session, so clean up every other saved session key.
+    // (Declining the resume prompt via "Start New Exercise" intentionally does NOT do this
+    // — that session stays resumable until an exercise is actually launched.)
+    clearOtherSessions(storageKey(s));
     setSession(s);
     startTimeRef.current = Date.now();
     setScreen("exercise");
