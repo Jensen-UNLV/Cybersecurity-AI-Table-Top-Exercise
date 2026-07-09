@@ -17,23 +17,54 @@ const INDUSTRY_PLAYBOOKS = [
 
 const ROLES = ["Facilitator", "Incident Commander", "Security Analyst", "Network Engineer", "Legal / Compliance", "Communications Lead", "Executive Sponsor", "Observer"];
 
+// Industry options for the Company Profile step. `regulator` is a short label surfaced
+// in the AI system prompt and used as the {{regulator}} placeholder in inject text.
+const INDUSTRIES = [
+  { id: "healthcare", name: "Healthcare", regulator: "HIPAA" },
+  { id: "financial", name: "Financial Services", regulator: "GLBA / PCI-DSS" },
+  { id: "retail", name: "Retail / E-commerce", regulator: "PCI-DSS" },
+  { id: "manufacturing", name: "Manufacturing", regulator: "CISA sector guidance" },
+  { id: "education", name: "Higher Education", regulator: "FERPA" },
+  { id: "government", name: "Government / Public Sector", regulator: "FISMA" },
+  { id: "technology", name: "Technology / SaaS", regulator: "SOC 2 / GDPR" },
+  { id: "energy", name: "Energy / Utilities", regulator: "NERC CIP" },
+  { id: "other", name: "Other / Not Listed", regulator: "applicable regulatory guidance" },
+];
+
+// Company size tiers. `scale` drives placeholder interpolation in INJECT_LIBRARY
+// (see interpolateInject) — e.g. record counts and dollar figures grow with company size.
+const COMPANY_SIZES = [
+  { id: "small", name: "Small (< 100 employees)", scale: { records: "8,000", ransom: "$120,000", wire: "$45,000", bandwidth: "40 Gbps" } },
+  { id: "mid", name: "Mid-size (100–1,000 employees)", scale: { records: "60,000", ransom: "$850,000", wire: "$180,000", bandwidth: "180 Gbps" } },
+  { id: "large", name: "Large (1,000–10,000 employees)", scale: { records: "340,000", ransom: "$4,200,000", wire: "$620,000", bandwidth: "680 Gbps" } },
+  { id: "enterprise", name: "Enterprise (10,000+ employees)", scale: { records: "2,300,000", ransom: "$18,000,000", wire: "$2,100,000", bandwidth: "1.2 Tbps" } },
+];
+
+const DEFAULT_COMPANY_PROFILE = { industry: "", companySize: "", additionalContext: "" };
+
+// Normalizes a possibly-stale saved companyProfile (e.g. sessions saved before this
+// feature existed) into the current shape, same pattern as normalizeFacilitatorConfig.
+function normalizeCompanyProfile(raw) {
+  return { ...DEFAULT_COMPANY_PROFILE, ...raw };
+}
+
 const INJECT_LIBRARY = {
   ransomware: [
     { title: "Backup System Alert", text: "IT reports that network-attached backup drives appear to be encrypting. The offline tape backup from last week may be the only clean copy.", color: "#dc2626" },
-    { title: "Ransom Note Received", text: "Attackers send a message: $4.2M in BTC within 48 hours, or keys are destroyed and data published.", color: "#dc2626" },
+    { title: "Ransom Note Received", text: "Attackers send a message: {{ransom}} in BTC within 48 hours, or keys are destroyed and data published.", color: "#dc2626" },
     { title: "Third-Party Vendor Notified", text: "A major SaaS vendor calls — they've detected the encryption spreading via your shared API credentials.", color: "#ea580c" },
     { title: "Cyber Insurance Contacted", text: "Legal reaches out to the insurer. The policy has a 72-hour notification requirement.", color: "#ca8a04" },
     { title: "Media Inquiry", text: "A reporter from a trade publication contacts PR — they've heard about the 'outage.'", color: "#ca8a04" },
   ],
   "data-exfil": [
     { title: "Exfiltration Confirmed", text: "DLP logs confirm 2.3 TB left via SFTP to an IP in Eastern Europe over 6 days.", color: "#dc2626" },
-    { title: "Regulatory Clock Starts", text: "Legal: under GDPR you have 72 hours from discovery to notify the DPA. Clock started 4 hours ago.", color: "#ea580c" },
-    { title: "Customer Data Identified", text: "Initial triage shows the exfiltrated data contains PII for ~340,000 customers.", color: "#dc2626" },
+    { title: "Regulatory Clock Starts", text: "Legal: under {{regulator}} you have a strict notification window from discovery. Clock started 4 hours ago.", color: "#ea580c" },
+    { title: "Customer Data Identified", text: "Initial triage shows the exfiltrated data contains PII for ~{{records}} customers.", color: "#dc2626" },
   ],
   ddos: [
     { title: "Amplification Vector Found", text: "Network team identifies a DNS amplification attack using your open resolver.", color: "#ea580c" },
     { title: "CDN Failover Triggered", text: "The CDN automatically failed over, but origin servers are still being hammered.", color: "#ca8a04" },
-    { title: "Attack Escalates", text: "Traffic peaks at 680 Gbps. The upstream ISP is threatening to null-route your ASN.", color: "#dc2626" },
+    { title: "Attack Escalates", text: "Traffic peaks at {{bandwidth}}. The upstream ISP is threatening to null-route your ASN.", color: "#dc2626" },
   ],
   insider: [
     { title: "HR Records Pulled", text: "The employee filed a grievance three months ago. Termination proceedings were underway.", color: "#ea580c" },
@@ -41,7 +72,7 @@ const INJECT_LIBRARY = {
     { title: "Legal Hold Required", text: "Legal instructs IT: preserve all logs and accounts. Do not disable — monitor only.", color: "#ca8a04" },
   ],
   phishing: [
-    { title: "Wire Transfer Initiated", text: "Finance confirms a $620,000 wire was sent before the email was flagged.", color: "#dc2626" },
+    { title: "Wire Transfer Initiated", text: "Finance confirms a {{wire}} wire was sent before the email was flagged.", color: "#dc2626" },
     { title: "Additional Targets Identified", text: "Similar emails were sent to 12 other executives. Two others clicked the link.", color: "#ea580c" },
     { title: "Credential Harvest Suspected", text: "The phishing link led to a spoofed login page. Assume all credentials entered are compromised.", color: "#dc2626" },
   ],
@@ -51,6 +82,23 @@ const INJECT_LIBRARY = {
     { title: "C2 Traffic Detected", text: "EDR identifies beaconing to a known C2 server from 17 endpoints post-update.", color: "#dc2626" },
   ],
 };
+
+// Swaps {{token}} placeholders in an inject's text with values scaled to the selected
+// company size, and appends an industry regulator reference where relevant. Falls back
+// to a generic phrase if no profile is set (e.g. previewing before the Company Profile
+// step is completed), so injects never render broken/literal tokens.
+function interpolateInject(inject, companyProfile) {
+  const sizeTier = COMPANY_SIZES.find(sz => sz.id === companyProfile?.companySize);
+  const industry = INDUSTRIES.find(ind => ind.id === companyProfile?.industry);
+  const scale = sizeTier?.scale || {};
+  const text = inject.text
+    .replace(/\{\{records\}\}/g, scale.records || "an undetermined number of")
+    .replace(/\{\{ransom\}\}/g, scale.ransom || "a significant sum")
+    .replace(/\{\{wire\}\}/g, scale.wire || "a substantial amount")
+    .replace(/\{\{bandwidth\}\}/g, scale.bandwidth || "a very high volume of")
+    .replace(/\{\{regulator\}\}/g, industry?.regulator || "applicable regulations");
+  return { ...inject, text };
+}
 
 // Turn-limit defaults per pace tier — used as the initial maxTurns value
 // and as the "reset to default" target for each tier.
@@ -153,7 +201,17 @@ const speech = (() => {
       utt.voice = cachedVoice || pickVoice();
       window.speechSynthesis.speak(utt);
     },
-    stop() { if (supported) window.speechSynthesis.cancel(); },
+    stop() {
+      if (!supported) return;
+      try { window.speechSynthesis.cancel(); } catch { /* ignore */ }
+      // Some browser implementations (notably Chrome, and more so inside sandboxed/iframe
+      // contexts like this app's preview environment) can leave an utterance queued or
+      // still audibly speaking if cancel() lands mid-transition — e.g. right as a new
+      // utterance starts, or if the engine is in a paused/resuming state. A second cancel
+      // shortly after reliably clears it; this is a no-op if the first call already fully
+      // stopped everything.
+      setTimeout(() => { try { window.speechSynthesis.cancel(); } catch { /* ignore */ } }, 50);
+    },
   };
 })();
 
@@ -624,17 +682,21 @@ const FontStyle = () => (
 );
 
 // ── Topbar ────────────────────────────────────────────────────
-function Topbar({ sessionName, stopped, finalDuration }) {
-  const [elapsed, setElapsed] = useState(0);
-  const startRef = useRef(Date.now());
-  useEffect(() => {
-    if (!sessionName || stopped) return;
-    startRef.current = Date.now();
-    const t = setInterval(() => setElapsed(Math.floor((Date.now() - startRef.current) / 1000)), 1000);
-    return () => clearInterval(t);
-  }, [sessionName, stopped]);
+function Topbar({ sessionName, stopped, finalDuration, elapsed }) {
+  // No internal timer here anymore — `elapsed` is passed in live from App, which itself
+  // just mirrors ExerciseView's scenarioElapsedSec (see App's `elapsedSec` state and
+  // ExerciseView's `onElapsedChange`). Previously this component ran its OWN independent
+  // `setInterval` seeded from `Date.now()` on every mount/sessionName change, which reset to
+  // 00:00:00 on every resume — the exact same un-persisted-timestamp bug already fixed for
+  // the phase/scenario countdowns, just hiding in a second, totally separate clock.
   const displayTime = stopped ? finalDuration : elapsed;
-  const fmt = s => `${String(Math.floor(s / 3600)).padStart(2, "0")}:${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+  // Floor first, then split into h/m/s — `elapsed` is a float (fractional-second deltas
+  // accumulate in ExerciseView's ticking effect), so flooring only after the `% 60` would
+  // leave a fractional remainder in the seconds position (e.g. "12:47.982").
+  const fmt = s => {
+    const whole = Math.floor(s);
+    return `${String(Math.floor(whole / 3600)).padStart(2, "0")}:${String(Math.floor((whole % 3600) / 60)).padStart(2, "0")}:${String(whole % 60).padStart(2, "0")}`;
+  };
   return (
     <div className="topbar no-print">
       <div className="topbar-brand">
@@ -786,7 +848,7 @@ function Toggle({ checked, onChange, labelOn = "Enabled", labelOff = "Disabled" 
 }
 
 // ── Facilitator Settings ──────────────────────────────────────
-function FacilitatorSettings({ config, onChange, scenario, playbook, participants, mystery }) {
+function FacilitatorSettings({ config, onChange, scenario, playbook, participants, mystery, companyProfile }) {
   const FOCUS_AREAS = ["Technical", "Legal / Compliance", "Communications", "Executive Decision-Making", "Vendor Management"];
   const toggle = (arr, val) => arr.includes(val) ? arr.filter(x => x !== val) : [...arr, val];
   const [showPrompt, setShowPrompt] = useState(false);
@@ -801,7 +863,8 @@ function FacilitatorSettings({ config, onChange, scenario, playbook, participant
     config.maxTurns,
     null,
     false,
-    mystery
+    mystery,
+    companyProfile
   );
 
   const TONE_INFO = {
@@ -1146,7 +1209,7 @@ function FacilitatorSettings({ config, onChange, scenario, playbook, participant
 }
 
 // Build system prompt from facilitator config
-function buildSystemPrompt(config, scenario, playbook, phase, participants, turnNumber = 0, maxTurns = config.maxTurns, nextPhase = null, isLastPhase = false, mystery = false) {
+function buildSystemPrompt(config, scenario, playbook, phase, participants, turnNumber = 0, maxTurns = config.maxTurns, nextPhase = null, isLastPhase = false, mystery = false, companyProfile = DEFAULT_COMPANY_PROFILE) {
   const toneMap = {
     professional: "formal and authoritative",
     conversational: "warm and approachable",
@@ -1204,6 +1267,13 @@ function buildSystemPrompt(config, scenario, playbook, phase, participants, turn
     ? `\n\nMYSTERY SCENARIO: The team has NOT been told what type of incident this is — that's the point of the exercise. Never state, name, or directly hint at the scenario's category or title (e.g. do not say or imply "ransomware," "DDoS," "insider threat," "phishing," "business email compromise," "data exfiltration," "supply chain compromise," or the scenario's title "${scenario.name}") anywhere in your response, including the opening scene-setting message. Describe only the technical symptoms, indicators, and consequences the team would actually observe, and let them diagnose the incident type themselves through their own investigation and playbook knowledge. If and only if the team correctly identifies the incident type through their own actions or reasoning, you may confirm it naturally as the scenario progresses — never volunteer it first.`
     : "";
 
+  const industry = INDUSTRIES.find(i => i.id === companyProfile?.industry);
+  const sizeTier = COMPANY_SIZES.find(s => s.id === companyProfile?.companySize);
+  const companyContext = companyProfile?.additionalContext?.trim();
+  const companyBlock = (industry || sizeTier || companyContext)
+    ? `\n\nCOMPANY PROFILE: Tailor scenario details — system names, dollar figures, headcounts, regulatory references, and organizational tone — to fit this organization rather than defaulting to generic examples.${industry ? ` Industry: ${industry.name} (relevant regulatory framework: ${industry.regulator}).` : ""}${sizeTier ? ` Size: ${sizeTier.name}.` : ""}${companyContext ? ` Additional context provided by the participants: ${companyContext}` : ""}`
+    : "";
+
   return `You are an expert cybersecurity tabletop exercise facilitator. Your role is to simulate a realistic incident and respond to the team's decisions — not to lead or prompt them.
 
 SCENARIO: ${scenario.name}. ${scenario.description}
@@ -1234,7 +1304,7 @@ MULTI-ROLE RESPONSES:
 
 Tone: ${toneMap[config.tone]}.
 Difficulty: ${diffMap[config.difficulty]}.
-Complexity: ${complexityMap[config.complexity]}.${focus}${custom}${turnBudget}${mysteryBlock}`;
+Complexity: ${complexityMap[config.complexity]}.${focus}${custom}${turnBudget}${mysteryBlock}${companyBlock}`;
 }
 
 // Format a set of simultaneous per-role responses into a single labeled block
@@ -1530,6 +1600,7 @@ function ParticipantSetup({ onStart, lastPlayed }) {
     participants: ROLES.map(role => ({ role, name: "", id: role, active: role === "Facilitator" })),
     sessionName: "",
     facilitatorConfig: { ...DEFAULT_FACILITATOR },
+    companyProfile: { ...DEFAULT_COMPANY_PROFILE },
   });
 
   // Auto-fill session name when scenario chosen
@@ -1554,11 +1625,12 @@ function ParticipantSetup({ onStart, lastPlayed }) {
   const canProceed = (() => {
     if (step === 0) return !!selected.scenario;
     if (step === 1) return !!selected.playbook;
-    if (step === 2) return activeParticipants.length > 0 && !!selected.sessionName.trim();
+    if (step === 2) return !!selected.companyProfile.industry && !!selected.companyProfile.companySize;
+    if (step === 3) return activeParticipants.length > 0 && !!selected.sessionName.trim();
     return true;
   })();
 
-  const STEPS = ["Select Scenario", "Choose Playbook", "Participants", "AI Facilitator"];
+  const STEPS = ["Select Scenario", "Choose Playbook", "Company Profile", "Participants", "AI Facilitator"];
 
   return (
     <div className="main">
@@ -1690,8 +1762,59 @@ function ParticipantSetup({ onStart, lastPlayed }) {
         </>
       )}
 
-      {/* ── Step 2: Participants ── */}
+      {/* ── Step 2: Company Profile ── */}
       {step === 2 && (
+        <>
+          <div className="section-header" style={{ display: "block", maxWidth: 680, margin: "0 auto 16px", textAlign: "center" }}>
+            <div>
+              <div className="section-title">Company Profile</div>
+              <div className="section-sub">Tell the AI facilitator about your organization so scenario details and injects feel like your company, not a generic example.</div>
+            </div>
+          </div>
+          <div style={{ maxWidth: 680, margin: "0 auto 24px" }}>
+            <div className="card">
+              <div className="card-title">Organization Details</div>
+              <div style={{ display: "flex", gap: 16, marginBottom: 14 }}>
+                <div style={{ flex: 1 }}>
+                  <label>Industry</label>
+                  <select
+                    value={selected.companyProfile.industry}
+                    onChange={e => setSelected(s => ({ ...s, companyProfile: { ...s.companyProfile, industry: e.target.value } }))}
+                  >
+                    <option value="">Select industry…</option>
+                    {INDUSTRIES.map(ind => <option key={ind.id} value={ind.id}>{ind.name}</option>)}
+                  </select>
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label>Company Size</label>
+                  <select
+                    value={selected.companyProfile.companySize}
+                    onChange={e => setSelected(s => ({ ...s, companyProfile: { ...s.companyProfile, companySize: e.target.value } }))}
+                  >
+                    <option value="">Select size…</option>
+                    {COMPANY_SIZES.map(sz => <option key={sz.id} value={sz.id}>{sz.name}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label>Additional Context (optional)</label>
+                <textarea
+                  placeholder="e.g. cloud-first infrastructure, recent M&A activity, remote workforce, public company, primary tech stack…"
+                  value={selected.companyProfile.additionalContext}
+                  onChange={e => setSelected(s => ({ ...s, companyProfile: { ...s.companyProfile, additionalContext: e.target.value } }))}
+                  style={{ minHeight: 90 }}
+                />
+              </div>
+              <div style={{ marginTop: 10, fontSize: 11, color: "#2a4a6a" }}>
+                Industry and size are used to scale dollar figures, record counts, and regulatory references throughout the exercise. This profile is locked in for the session once launched.
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* ── Step 3: Participants ── */}
+      {step === 3 && (
         <>
           <div className="section-header" style={{ display: "block", maxWidth: 680, margin: "0 auto 16px", textAlign: "center" }}>
             <div><div className="section-title">Participants & Session</div><div className="section-sub">Enable the roles joining this exercise. Names are optional — leave blank to use the role title.</div></div>
@@ -1799,8 +1922,8 @@ function ParticipantSetup({ onStart, lastPlayed }) {
         </>
       )}
 
-      {/* ── Step 3: Facilitator Settings ── */}
-      {step === 3 && (
+      {/* ── Step 4: Facilitator Settings ── */}
+      {step === 4 && (
         <>
           <div className="section-header" style={{ display: "block", maxWidth: 760, margin: "0 auto 16px", textAlign: "center" }}>
             <div>
@@ -1817,6 +1940,7 @@ function ParticipantSetup({ onStart, lastPlayed }) {
                 playbook={selected.playbook}
                 participants={selected.participants.filter(p => p.active)}
                 mystery={usedRandomizer}
+                companyProfile={selected.companyProfile}
               />
               <hr className="divider" />
               <div style={{ fontSize: 12, color: "#2a4a6a", lineHeight: 1.7 }}>
@@ -1830,7 +1954,7 @@ function ParticipantSetup({ onStart, lastPlayed }) {
       {/* Nav — width matches each step's content column so buttons align left under the content, not the page */}
       <div style={{
         display: "flex", gap: 10, paddingBottom: 40,
-        ...(step === 0 ? {} : { maxWidth: step === 2 ? 680 : 760, margin: "0 auto" }),
+        ...(step === 0 ? {} : { maxWidth: (step === 2 || step === 3) ? 680 : 760, margin: "0 auto" }),
       }}>
         {step > 0 && <button className="btn btn-ghost" onClick={() => {
           // Going back to step 0 after randomizer: keep the hidden scenario,
@@ -2215,8 +2339,8 @@ function AIChat({ scenario, phase, messages, onMessage, loading, participants, m
 }
 
 // ── Injects ───────────────────────────────────────────────────
-function InjectPanel({ scenario, onInject }) {
-  const injects = INJECT_LIBRARY[scenario?.id] || [];
+function InjectPanel({ scenario, onInject, companyProfile }) {
+  const injects = (INJECT_LIBRARY[scenario?.id] || []).map(inj => interpolateInject(inj, companyProfile));
   return (
     <div className="card">
       <div className="card-title">SCENARIO INJECTS</div>
@@ -2843,15 +2967,32 @@ function useChatStorage(session) {
     } catch { return null; }
   };
 
-  const save = (messages, timeline, phaseIdx, session, turnsInPhase, phaseStartedAt, scenarioStartedAt) => {
+  // `liveFacilitatorConfig` is passed in separately from `session` because the mid-exercise
+  // Settings tab edits facilitatorConfig via its OWN React state in ExerciseView, not via
+  // the `session` object (which is the immutable prop captured at setup/resume time and
+  // never changes again). Previously this function read `session?.facilitatorConfig`
+  // directly — the ORIGINAL, setup-time config — so any Time Limit change made mid-exercise
+  // (enabling it, changing pace/duration, toggling per-phase overrides) was silently never
+  // persisted: a refresh + resume would revert Time Limit settings to whatever they were at
+  // launch, which looked exactly like "the time limit resets." `companyProfile` is also now
+  // included — it's immutable for the life of a session (no mid-exercise edit path exists
+  // for it), so it's read from `session` same as sessionName/playbook/participants, but was
+  // previously missing from this payload entirely, silently dropping it on resume.
+  //
+  // `phaseRemainingSec`/`scenarioElapsedSec` (previously `phaseStartedAt`/`scenarioStartedAt`
+  // timestamps) are now plain durations — the exact remaining/elapsed seconds at save time —
+  // rather than a wall-clock start point to do math against on resume. This is what makes
+  // resuming freeze the clock while away instead of continuing to drain it in the background.
+  const save = (messages, timeline, phaseIdx, session, turnsInPhase, phaseRemainingSec, scenarioElapsedSec, liveFacilitatorConfig) => {
     try {
       localStorage.setItem(key, JSON.stringify({
-        messages, timeline, phaseIdx, turnsInPhase, phaseStartedAt, scenarioStartedAt,
+        messages, timeline, phaseIdx, turnsInPhase, phaseRemainingSec, scenarioElapsedSec,
         // Persist enough session metadata to reconstruct on resume
         sessionName: session?.sessionName,
         playbook: session?.playbook,
         participants: session?.participants,
-        facilitatorConfig: session?.facilitatorConfig,
+        facilitatorConfig: liveFacilitatorConfig || session?.facilitatorConfig,
+        companyProfile: session?.companyProfile,
         usedRandomizer: session?.usedRandomizer,
         savedAt: new Date().toISOString(),
       }));
@@ -2861,11 +3002,12 @@ function useChatStorage(session) {
         try {
           const trimmed = messages.slice(-30);
           localStorage.setItem(key, JSON.stringify({
-            messages: trimmed, timeline, phaseIdx, turnsInPhase, phaseStartedAt, scenarioStartedAt,
+            messages: trimmed, timeline, phaseIdx, turnsInPhase, phaseRemainingSec, scenarioElapsedSec,
             sessionName: session?.sessionName,
             playbook: session?.playbook,
             participants: session?.participants,
-            facilitatorConfig: session?.facilitatorConfig,
+            facilitatorConfig: liveFacilitatorConfig || session?.facilitatorConfig,
+            companyProfile: session?.companyProfile,
             usedRandomizer: session?.usedRandomizer,
             savedAt: new Date().toISOString(),
           }));
@@ -2922,7 +3064,7 @@ ${convo}`,
 }
 
 // ── Exercise View ─────────────────────────────────────────────
-function ExerciseView({ session, onEnd }) {
+function ExerciseView({ session, onEnd, onElapsedChange }) {
   const playbook = session.playbook;
   const phases = playbook.phases?.length
     ? playbook.phases
@@ -2930,9 +3072,35 @@ function ExerciseView({ session, onEnd }) {
 
   const [phaseIdx, setPhaseIdx] = useState(0);
   const [turnsInPhase, setTurnsInPhase] = useState(0);
-  const [phaseStartedAt, setPhaseStartedAt] = useState(() => Date.now());
-  const [scenarioStartedAt, setScenarioStartedAt] = useState(() => Date.now());
-  const [nowTick, setNowTick] = useState(() => Date.now());
+  // Time budgets are tracked as plain countdown/elapsed DURATIONS in state, not derived
+  // from a fixed start timestamp compared against wall-clock "now". With timestamp math,
+  // closing the browser — or simply sitting on the Resume/"Start New Exercise" selector
+  // screen deciding whether to continue — silently burned real minutes off every timer's
+  // budget, even though the team wasn't actually working the incident during that gap.
+  // Tracking duration directly means the countdown only ticks while THIS component is
+  // actually mounted (see the ticking effect below), freezing the instant the exercise view
+  // unmounts and resuming from exactly where it left off no matter how much real time
+  // passes in between — including time spent on the resume screen itself.
+  const [phaseRemainingSec, setPhaseRemainingSec] = useState(null); // null = no per-phase time limit active
+  const [scenarioElapsedSec, setScenarioElapsedSec] = useState(0);
+  // Tracks the phaseLimitMinutes value phaseRemainingSec was last reset for, so the
+  // mid-exercise-settings-change effect further below can tell a genuine change (a pace or
+  // duration edit, or the feature being toggled on/off from the Settings tab) apart from an
+  // unrelated re-render recomputing the same value. advancePhase() and the mount/resume
+  // effect both set phaseRemainingSec directly and keep this ref in sync themselves, so
+  // that change-detector effect doesn't immediately "see" a mismatch and redundantly reset
+  // what they just correctly set.
+  const lastPhaseLimitRef = useRef(null);
+  // Gates the change-detector effect until the mount/resume-restore effect's OWN state
+  // updates have actually committed and re-rendered. Without this, the detector would also
+  // run within that very first effect pass (same commit), see the pre-restore render's
+  // stale phaseIdx/phaseLimitMinutes, and immediately stomp the value just restored.
+  const initializedRef = useRef(false);
+  // Wall-clock timestamp of the last tick, used only to compute the real delta *between
+  // ticks* (normally ~1000ms) — never compared against a fixed "start" — so drift/throttling
+  // while the tab is backgrounded is handled gracefully without ever counting time that
+  // elapsed while this component wasn't mounted at all.
+  const lastTickRef = useRef(Date.now());
   const [messages, setMessages] = useState([]);
   const [timeline, setTimeline] = useState([{ label: "Exercise started", detail: `${session.scenario.name} · ${playbook.name}`, time: new Date().toLocaleTimeString() }]);
   const [loading, setLoading] = useState(false);
@@ -2943,21 +3111,27 @@ function ExerciseView({ session, onEnd }) {
 
   const storage = useChatStorage(session);
 
+  // Stop any in-progress "Read Aloud" narration the moment this view unmounts — covers
+  // End Early, Complete Exercise, and any future navigation-away path from the exercise.
+  // window.speechSynthesis is a browser-global API, not tied to VoiceButton's own local
+  // `speaking` state, so simply unmounting VoiceButton does NOT stop it on its own —
+  // without this, narration that was playing when the exercise ended kept speaking right
+  // through the After-Action Report screen.
+  useEffect(() => {
+    return () => speech.stop();
+  }, []);
+
   const currentPhase = phases[phaseIdx];
   const isLastPhase = phaseIdx >= phases.length - 1;
   const nextPhase = isLastPhase ? null : phases[phaseIdx + 1];
 
-  // Time-limit bookkeeping — derived from a ticking clock (see the interval effect below)
-  // so countdowns/warnings stay live without needing a message send to re-render.
+  // Time-limit bookkeeping — phaseRemainingSec/scenarioElapsedSec are plain duration state
+  // (see declarations above and the ticking effect below), not derived from timestamps.
   const phaseLimitMinutes = getPhaseTimeLimitMinutes(facilitatorConfig, currentPhase);
-  const phaseElapsedMs = nowTick - phaseStartedAt;
-  const phaseRemainingSec = phaseLimitMinutes != null
-    ? Math.max(0, Math.round(phaseLimitMinutes * 60 - phaseElapsedMs / 1000))
-    : null;
   const scenarioLimitMinutes = facilitatorConfig.timeLimitEnabled && facilitatorConfig.timeLimitScope === "scenario"
     ? facilitatorConfig.maxScenarioMinutes
     : null;
-  const scenarioElapsedMinutes = (nowTick - scenarioStartedAt) / 60000;
+  const scenarioElapsedMinutes = scenarioElapsedSec / 60;
   const scenarioTimeExceeded = scenarioLimitMinutes != null && scenarioElapsedMinutes >= scenarioLimitMinutes;
   // True once the exercise has reached its natural end point: the final phase has no
   // further phase to auto-advance into, so once ITS OWN turn or time budget runs out,
@@ -2987,13 +3161,23 @@ function ExerciseView({ session, onEnd }) {
 
   // Persist to localStorage after every message or phase change
   useEffect(() => {
-    if (messages.length > 0) storage.save(messages, timeline, phaseIdx, session, turnsInPhase, phaseStartedAt, scenarioStartedAt);
-  }, [messages, timeline, phaseIdx, turnsInPhase, phaseStartedAt, scenarioStartedAt]);
+    if (messages.length > 0) storage.save(messages, timeline, phaseIdx, session, turnsInPhase, phaseRemainingSec, scenarioElapsedSec, facilitatorConfig);
+  }, [messages, timeline, phaseIdx, turnsInPhase, phaseRemainingSec, scenarioElapsedSec, facilitatorConfig]);
 
-  // Live clock for time-limit countdowns/warnings — ticks regardless of message activity,
-  // since a phase or scenario time limit can be reached while the team is still typing.
+  // Live countdown/elapsed tick — decrements phaseRemainingSec and accumulates
+  // scenarioElapsedSec once per second, but ONLY while this component is mounted. Each tick
+  // computes the real delta since the PREVIOUS tick (normally ~1000ms) rather than against
+  // a fixed start time, so brief background-tab throttling is absorbed gracefully — and,
+  // critically, no time at all accrues for any stretch where the component wasn't mounted
+  // (closed tab, refresh, sitting on the Resume screen), since ticks simply don't fire then.
   useEffect(() => {
-    const id = setInterval(() => setNowTick(Date.now()), 1000);
+    const id = setInterval(() => {
+      const now = Date.now();
+      const deltaSec = (now - lastTickRef.current) / 1000;
+      lastTickRef.current = now;
+      setPhaseRemainingSec(sec => (sec == null ? sec : Math.max(0, sec - deltaSec)));
+      setScenarioElapsedSec(sec => sec + deltaSec);
+    }, 1000);
     return () => clearInterval(id);
   }, []);
 
@@ -3003,19 +3187,82 @@ function ExerciseView({ session, onEnd }) {
       const r = session._resumeData;
       setMessages(r.messages || []);
       setTimeline(r.timeline || [{ label: "Session resumed", detail: session.scenario.name, time: new Date().toLocaleTimeString() }]);
-      setPhaseIdx(r.phaseIdx || 0);
+      const restoredPhaseIdx = r.phaseIdx || 0;
+      setPhaseIdx(restoredPhaseIdx);
       setTurnsInPhase(r.turnsInPhase || 0);
-      // Older saved sessions won't have these two fields — fall back to "now" so a
-      // resumed session gets a fresh countdown instead of doing math against undefined.
-      setPhaseStartedAt(r.phaseStartedAt || Date.now());
-      setScenarioStartedAt(r.scenarioStartedAt || Date.now());
+      const resolvedLimit = getPhaseTimeLimitMinutes(facilitatorConfig, phases[restoredPhaseIdx]);
+      lastPhaseLimitRef.current = resolvedLimit;
+      if (typeof r.phaseRemainingSec === "number") {
+        // Current format: the exact remaining duration, saved directly — resume picks up
+        // from precisely here regardless of how much real time passed while away.
+        setPhaseRemainingSec(r.phaseRemainingSec);
+      } else if (typeof r.phaseStartedAt === "number" && resolvedLimit != null) {
+        // Migrating a session saved before this duration-based rework existed (it only
+        // had a wall-clock start timestamp) — derive ONE last timestamp-based value here
+        // so the migration doesn't jump back to a full countdown, then switch entirely to
+        // duration-tracking (no more wall-clock math) from this point forward.
+        setPhaseRemainingSec(Math.max(0, resolvedLimit * 60 - (Date.now() - r.phaseStartedAt) / 1000));
+      } else {
+        setPhaseRemainingSec(resolvedLimit != null ? resolvedLimit * 60 : null);
+      }
+      if (typeof r.scenarioElapsedSec === "number") {
+        setScenarioElapsedSec(r.scenarioElapsedSec);
+      } else if (typeof r.scenarioStartedAt === "number") {
+        setScenarioElapsedSec((Date.now() - r.scenarioStartedAt) / 1000);
+      } else {
+        setScenarioElapsedSec(0);
+      }
     } else {
+      const resolvedLimit = getPhaseTimeLimitMinutes(facilitatorConfig, phases[0]);
+      lastPhaseLimitRef.current = resolvedLimit;
+      setPhaseRemainingSec(resolvedLimit != null ? resolvedLimit * 60 : null);
       initSession();
     }
+    lastTickRef.current = Date.now();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Detects a mid-exercise Settings-tab edit that changes the EFFECTIVE per-phase time
+  // budget (enabling/disabling Time Limit, changing pace/duration, toggling per-phase
+  // overrides) and resets the countdown to the new full duration. Phase-to-phase resets are
+  // handled explicitly and deterministically inside advancePhase() itself, NOT here — this
+  // effect only needs to catch changes that happen mid-phase. Gated by initializedRef so it
+  // never fires before the mount/resume-restore effect's own state has actually committed
+  // (see initializedRef's declaration comment above for why that ordering matters).
+  useEffect(() => {
+    if (!initializedRef.current) return;
+    if (phaseLimitMinutes !== lastPhaseLimitRef.current) {
+      lastPhaseLimitRef.current = phaseLimitMinutes;
+      setPhaseRemainingSec(phaseLimitMinutes != null ? phaseLimitMinutes * 60 : null);
+    }
+  }, [phaseLimitMinutes]);
+
+  // Lifts scenarioElapsedSec up to the parent (App), which uses it to drive the Topbar's
+  // live "total session time" display and the final duration recorded for the AAR. This
+  // reuses the SAME already-correct, already-persisted duration this component tracks for
+  // the Entire-Scenario time-limit feature — rather than introduce a third independent
+  // timer, which is exactly how the Topbar ended up with its own broken, un-persisted
+  // "time since mount" clock in the first place (see App's onElapsedChange usage and
+  // Topbar's props for the other half of this fix). Declared BEFORE the initializedRef flag
+  // effect below, and gated the same way as the change-detector effect above, so it never
+  // reports the transient pre-restore value of scenarioElapsedSec (0, or a stale value from
+  // before a resume) up to the parent — only the settled, correct value from the second
+  // commit onward.
+  useEffect(() => {
+    if (!initializedRef.current) return;
+    onElapsedChange?.(scenarioElapsedSec);
+  }, [scenarioElapsedSec]);
+
+  // Flips on AFTER the mount/resume-restore effect and the change-detector effect above
+  // have both run once on the initial commit — only from the NEXT commit onward (once the
+  // restored phaseIdx/config state has actually applied and phaseLimitMinutes recomputes
+  // against the correct values) does the change-detector start actively monitoring.
+  useEffect(() => {
+    initializedRef.current = true;
   }, []);
 
   const getSystemPrompt = (turnOverride) =>
-    buildSystemPrompt(facilitatorConfig, session.scenario, playbook, currentPhase, session.participants, turnOverride ?? turnsInPhase, facilitatorConfig.maxTurns, nextPhase, isLastPhase, session.usedRandomizer);
+    buildSystemPrompt(facilitatorConfig, session.scenario, playbook, currentPhase, session.participants, turnOverride ?? turnsInPhase, facilitatorConfig.maxTurns, nextPhase, isLastPhase, session.usedRandomizer, session.companyProfile);
 
   const initSession = async () => {
     setLoading(true);
@@ -3135,7 +3382,14 @@ function ExerciseView({ session, onEnd }) {
     const next = phases[phaseIdx + 1];
     setPhaseIdx(i => i + 1);
     setTurnsInPhase(0);
-    setPhaseStartedAt(Date.now());
+    // Deterministically give the new phase its own full time budget — computed here rather
+    // than left to the mid-exercise change-detector effect, since a phase change should
+    // ALWAYS reset to a fresh full duration regardless of whether the new phase happens to
+    // resolve to the same number of minutes as the old one (which the detector, watching
+    // only for a numeric-value change, would otherwise miss).
+    const nextLimit = getPhaseTimeLimitMinutes(facilitatorConfig, next);
+    lastPhaseLimitRef.current = nextLimit;
+    setPhaseRemainingSec(nextLimit != null ? nextLimit * 60 : null);
     const reasonLabel = reason === "time" ? "time limit reached" : "turn limit reached";
     setTimeline(prev => [...prev, {
       label: auto ? `Phase auto-advanced: ${next} (${reasonLabel})` : `Phase: ${next}`,
@@ -3159,14 +3413,28 @@ function ExerciseView({ session, onEnd }) {
 
   // Time-limit auto-advance — checked on every clock tick (not just on message send),
   // since a phase's time budget can run out while the team hasn't sent anything at all.
+  // phaseRemainingSec itself now updates once per second via the ticking effect above, so
+  // it alone is sufficient to re-run this check every tick — no separate "now" dependency
+  // is needed the way the old timestamp-based version required.
   useEffect(() => {
     if (phaseLimitMinutes == null) return;
     if (isLastPhase) return;
     if (loading) return;
+    // phaseRemainingSec starts as `null` and is only set to a real number by the
+    // mount/resume-restore effect's OWN state update — which, on the very first render,
+    // hasn't been committed yet (effects run in declaration order within the same commit,
+    // but a setState call doesn't retroactively change what a LATER effect in that same
+    // pass reads from its closure). Without this guard, `null > 0` evaluates to `false` in
+    // JS, so the check below would treat "not yet initialized" as "already expired" and
+    // fire an incorrect auto-advance on mount for ANY new or resumed session with a
+    // Per-Phase Time Limit active — this was a real regression: it advanced new sessions
+    // past their starting phase, and resumed sessions past whatever phase they were
+    // actually restored to, before the real countdown value even existed yet.
+    if (phaseRemainingSec == null) return;
     if (phaseRemainingSec > 0) return;
     advancePhase(true, "time");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nowTick, phaseLimitMinutes, isLastPhase, loading, phaseRemainingSec]);
+  }, [phaseLimitMinutes, isLastPhase, loading, phaseRemainingSec]);
 
   return (
     <>
@@ -3199,9 +3467,17 @@ function ExerciseView({ session, onEnd }) {
                   Turn {Math.min(turnsInPhase + (phaseIdx < phases.length - 1 ? 1 : 0), facilitatorConfig.maxTurns)} of {facilitatorConfig.maxTurns} this phase
                 </div>
               )}
-              {phaseLimitMinutes != null && (
+              {/* Also requires phaseRemainingSec != null — it starts null for one render
+                  until the mount/resume-restore effect's own state update commits, and
+                  without this guard that transient null would flash "00:00" in red (null
+                  coerces to 0 in both the <= comparison and Math.floor) for a frame. */}
+              {phaseLimitMinutes != null && phaseRemainingSec != null && (
                 <div style={{ fontSize: 11, color: phaseRemainingSec <= 60 ? "#f87171" : "#4a6a8a", fontFamily: "'Share Tech Mono', monospace" }}>
-                  ⏳ {String(Math.floor(phaseRemainingSec / 60)).padStart(2, "0")}:{String(phaseRemainingSec % 60).padStart(2, "0")} remaining this phase
+                  {/* phaseRemainingSec is a float (accumulated via real per-tick deltas, not whole
+                      seconds) — floor the whole value first so both the minutes and the seconds
+                      remainder are clean integers, rather than flooring only the minutes half and
+                      leaving a fractional remainder like "59.976" in the seconds position. */}
+                  ⏳ {String(Math.floor(Math.floor(phaseRemainingSec) / 60)).padStart(2, "0")}:{String(Math.floor(phaseRemainingSec) % 60).padStart(2, "0")} remaining this phase
                 </div>
               )}
             </div>
@@ -3294,7 +3570,7 @@ function ExerciseView({ session, onEnd }) {
 
         {tab === "injects" && (
           <div className="grid-2 gap-4">
-            <InjectPanel scenario={session.scenario} onInject={injectScenario} />
+            <InjectPanel scenario={session.scenario} onInject={injectScenario} companyProfile={session.companyProfile} />
             <CustomInject onInject={injectScenario} />
           </div>
         )}
@@ -3354,6 +3630,7 @@ function ExerciseView({ session, onEnd }) {
                 playbook={session.playbook}
                 participants={session.participants}
                 mystery={session.usedRandomizer}
+                companyProfile={session.companyProfile}
               />
             </div>
           </div>
@@ -3370,6 +3647,7 @@ function ExerciseView({ session, onEnd }) {
           confirmStyle={{ background: "rgba(220,38,38,0.2)", color: "#f87171", border: "1px solid rgba(220,38,38,0.4)" }}
           onConfirm={() => {
             setConfirmModal(null);
+            speech.stop(); // stop narration immediately — don't wait for the ExerciseView unmount cleanup
             lastPlayedStorage.save(session.scenario, session.playbook, session.sessionName);
             storage.clear();
             onEnd(messages, timeline);
@@ -3386,6 +3664,7 @@ function ExerciseView({ session, onEnd }) {
           confirmStyle={{ background: "rgba(22,163,74,0.2)", color: "#4ade80", border: "1px solid rgba(22,163,74,0.4)" }}
           onConfirm={() => {
             setConfirmModal(null);
+            speech.stop(); // stop narration immediately — don't wait for the ExerciseView unmount cleanup
             lastPlayedStorage.save(session.scenario, session.playbook, session.sessionName);
             storage.clear();
             onEnd(messages, timeline);
@@ -3404,7 +3683,18 @@ export default function App() {
   const [exerciseData, setExerciseData] = useState({ messages: [], timeline: [], duration: 0 });
   const [savedSession, setSavedSession] = useState(null); // active unfinished session found in localStorage
   const [lastPlayed, setLastPlayed] = useState(null);     // most recently completed scenario
-  const startTimeRef = useRef(null);
+  // "Total session time" shown live in the Topbar and recorded as the AAR's final duration.
+  // This used to be tracked independently here via a `startTimeRef` timestamp (reset to
+  // Date.now() on every resume, same bug class as the phase/scenario countdowns) AND,
+  // separately, AGAIN inside Topbar itself via its own private timer — two more timestamp
+  // clocks with no persistence, on top of the ones already fixed in ExerciseView. Rather
+  // than patch a third one, this now receives live updates from ExerciseView's own
+  // scenarioElapsedSec (see its onElapsedChange callback) — the same already-correct,
+  // already-persisted duration ExerciseView tracks for the Entire-Scenario time-limit
+  // feature, which ticks only while the exercise is actually mounted and resumes from
+  // exactly where it left off. There is deliberately no local ticking interval here anymore;
+  // this value simply mirrors whatever ExerciseView last reported.
+  const [elapsedSec, setElapsedSec] = useState(0);
 
   // Load lastPlayed on mount — always show it on scenario selection
   useEffect(() => {
@@ -3454,11 +3744,22 @@ export default function App() {
       participants: savedSession.participants || [{ role: "Facilitator", name: "", id: "Facilitator", active: true }],
       sessionName: savedSession.sessionName || keyParts.slice(0, -1).join(" "),
       facilitatorConfig: normalizeFacilitatorConfig(savedSession.facilitatorConfig),
+      companyProfile: normalizeCompanyProfile(savedSession.companyProfile),
       usedRandomizer: !!savedSession.usedRandomizer,
       _resumeData: savedSession,
     };
+    // Seed the live "total session time" synchronously, mirroring the exact same
+    // current-format/legacy-migration logic ExerciseView's own restore effect uses for
+    // scenarioElapsedSec — so the Topbar shows the correct resumed duration immediately on
+    // the very first render of the exercise screen, rather than flashing 00:00:00 for a
+    // moment while waiting for ExerciseView's onElapsedChange callback to catch up.
+    const initialElapsed = typeof savedSession.scenarioElapsedSec === "number"
+      ? savedSession.scenarioElapsedSec
+      : typeof savedSession.scenarioStartedAt === "number"
+        ? (Date.now() - savedSession.scenarioStartedAt) / 1000
+        : 0;
+    setElapsedSec(initialElapsed);
     setSession(restoredSession);
-    startTimeRef.current = Date.now();
     setScreen("exercise");
     window.scrollTo({ top: 0, behavior: "instant" });
   };
@@ -3476,13 +3777,16 @@ export default function App() {
     // — that session stays resumable until an exercise is actually launched.)
     clearOtherSessions(storageKey(s));
     setSession(s);
-    startTimeRef.current = Date.now();
+    setElapsedSec(0);
     setScreen("exercise");
     window.scrollTo({ top: 0, behavior: "instant" });
   };
 
   const handleEnd = (messages, timeline) => {
-    const duration = Math.floor((Date.now() - (startTimeRef.current || Date.now())) / 1000);
+    // elapsedSec is kept live by ExerciseView's onElapsedChange callback (ticking once per
+    // second, same value the Entire-Scenario time-limit feature uses), so it already
+    // reflects the exercise's real active duration — no separate timestamp math needed here.
+    const duration = Math.floor(elapsedSec);
     setExerciseData({ messages, timeline, duration });
     setLastPlayed(lastPlayedStorage.load()); // refresh after exercise writes lastPlayed
     setScreen("aar");
@@ -3493,7 +3797,7 @@ export default function App() {
     setSession(null);
     setSavedSession(null);
     setExerciseData({ messages: [], timeline: [], duration: 0 });
-    startTimeRef.current = null;
+    setElapsedSec(0);
     setLastPlayed(lastPlayedStorage.load());
     setScreen("setup");
     window.scrollTo({ top: 0, behavior: "instant" });
@@ -3506,6 +3810,7 @@ export default function App() {
         sessionName={session?.sessionName}
         stopped={screen === "aar"}
         finalDuration={exerciseData.duration}
+        elapsed={elapsedSec}
       />
       <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
         {screen === "landing" && <LandingPage onBegin={handleBegin} />}
@@ -3545,6 +3850,7 @@ export default function App() {
           <ExerciseView
             session={session}
             onEnd={handleEnd}
+            onElapsedChange={setElapsedSec}
           />
         )}
         {screen === "aar" && session && (
