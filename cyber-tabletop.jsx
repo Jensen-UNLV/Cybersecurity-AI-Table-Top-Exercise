@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, memo, forwardRef } from "react";
 
 // ── Data ──────────────────────────────────────────────────────
 const SCENARIOS = [
@@ -48,38 +48,68 @@ function normalizeCompanyProfile(raw) {
   return { ...DEFAULT_COMPANY_PROFILE, ...raw };
 }
 
+// Fully generic, category-agnostic opening symptoms for Mystery Scenario mode. These are
+// deliberately shared across ALL scenario types (not scenario-specific) so that wording style
+// itself can never hint at the underlying incident category. One is chosen at random per
+// session (session.mysteryOpenerIndex, seeded once at launch so it survives resume) and fed
+// to the AI verbatim as the literal opening scene — see initSession's openingInstruction.
+const MYSTERY_OPENERS = [
+  "Helpdesk has logged a higher-than-normal volume of tickets over the past hour. Employees and customers report that certain systems are slow, unresponsive, or behaving unpredictably.",
+  "A department manager reports that a colleague mentioned files that look different than expected, a login prompt that seemed unusual, and a process that isn't running the way it normally does.",
+  "Monitoring dashboards show several metrics operating outside their normal range. The on-call analyst has flagged the pattern for review.",
+  "A business partner has reached out with a question about account access, a recent transaction, or a change that doesn't match your team's records.",
+  "Several employees report communications or account behavior that is inconsistent with normal operations.",
+  "IT operations reports that some routine processes are taking longer than usual or producing unexpected results.",
+];
+
+// Each inject now carries a `tier`: "investigative" (ambiguous/symptom-level lead — safe to
+// use before the team has confirmed a root cause) or "confirmation" (root-cause/source
+// specifics — meant to be held until the team's investigation has earned the reveal). See
+// InjectPanel, which groups and labels cards by tier rather than rendering one flat list.
 const INJECT_LIBRARY = {
   ransomware: [
-    { title: "Backup System Alert", text: "IT reports that network-attached backup drives appear to be encrypting. The offline tape backup from last week may be the only clean copy.", color: "#dc2626" },
-    { title: "Ransom Note Received", text: "Attackers send a message: {{ransom}} in BTC within 48 hours, or keys are destroyed and data published.", color: "#dc2626" },
-    { title: "Third-Party Vendor Notified", text: "A major SaaS vendor calls — they've detected the encryption spreading via your shared API credentials.", color: "#ea580c" },
-    { title: "Cyber Insurance Contacted", text: "Legal reaches out to the insurer. The policy has a 72-hour notification requirement.", color: "#ca8a04" },
-    { title: "Media Inquiry", text: "A reporter from a trade publication contacts PR — they've heard about the 'outage.'", color: "#ca8a04" },
+    { title: "Sluggish File Shares Reported", text: "Multiple departments report that shared drives are slow to open, and a few files won't open at all. IT hasn't yet determined why.", color: "#ca8a04", tier: "investigative" },
+    { title: "Unusual File Extensions Spotted", text: "A user mentions some of their documents now have strange file extensions they don't recognize. They assumed it was a glitch.", color: "#ea580c", tier: "investigative" },
+    { title: "Backup System Alert", text: "IT reports that network-attached backup drives appear to be encrypting. The offline tape backup from last week may be the only clean copy.", color: "#dc2626", tier: "confirmation" },
+    { title: "Ransom Note Received", text: "Attackers send a message: {{ransom}} in BTC within 48 hours, or keys are destroyed and data published.", color: "#dc2626", tier: "confirmation" },
+    { title: "Third-Party Vendor Notified", text: "A major SaaS vendor calls — they've detected the encryption spreading via your shared API credentials.", color: "#ea580c", tier: "confirmation" },
+    { title: "Cyber Insurance Contacted", text: "Legal reaches out to the insurer. The policy has a 72-hour notification requirement.", color: "#ca8a04", tier: "confirmation" },
+    { title: "Media Inquiry", text: "A reporter from a trade publication contacts PR — they've heard about the 'outage.'", color: "#ca8a04", tier: "confirmation" },
   ],
   "data-exfil": [
-    { title: "Exfiltration Confirmed", text: "DLP logs confirm 2.3 TB left via SFTP to an IP in Eastern Europe over 6 days.", color: "#dc2626" },
-    { title: "Regulatory Clock Starts", text: "Legal: under {{regulator}} you have a strict notification window from discovery. Clock started 4 hours ago.", color: "#ea580c" },
-    { title: "Customer Data Identified", text: "Initial triage shows the exfiltrated data contains PII for ~{{records}} customers.", color: "#dc2626" },
+    { title: "Unusual Outbound Traffic Flagged", text: "Network monitoring flags a pattern of outbound traffic at odd hours that doesn't match normal business usage. Nothing has been confirmed as malicious yet.", color: "#ca8a04", tier: "investigative" },
+    { title: "Customer Complaints Trickle In", text: "A few customers report suspicious activity on their accounts elsewhere, wondering if it's related to something on your end.", color: "#ca8a04", tier: "investigative" },
+    { title: "Exfiltration Confirmed", text: "DLP logs confirm 2.3 TB left via SFTP to an IP in Eastern Europe over 6 days.", color: "#dc2626", tier: "confirmation" },
+    { title: "Regulatory Clock Starts", text: "Legal: under {{regulator}} you have a strict notification window from discovery. Clock started 4 hours ago.", color: "#ea580c", tier: "confirmation" },
+    { title: "Customer Data Identified", text: "Initial triage shows the exfiltrated data contains PII for ~{{records}} customers.", color: "#dc2626", tier: "confirmation" },
   ],
   ddos: [
-    { title: "Amplification Vector Found", text: "Network team identifies a DNS amplification attack using your open resolver.", color: "#ea580c" },
-    { title: "CDN Failover Triggered", text: "The CDN automatically failed over, but origin servers are still being hammered.", color: "#ca8a04" },
-    { title: "Attack Escalates", text: "Traffic peaks at {{bandwidth}}. The upstream ISP is threatening to null-route your ASN.", color: "#dc2626" },
+    { title: "Helpdesk Ticket Spike", text: "Helpdesk reports a surge in calls about certain company websites loading slowly or not at all. No cause has been identified yet.", color: "#ca8a04", tier: "investigative" },
+    { title: "Monitoring Shows Elevated Load", text: "Infrastructure dashboards show web server load climbing steadily with no obvious internal cause.", color: "#ca8a04", tier: "investigative" },
+    { title: "Amplification Vector Found", text: "Network team identifies a DNS amplification attack using your open resolver.", color: "#ea580c", tier: "confirmation" },
+    { title: "CDN Failover Triggered", text: "The CDN automatically failed over, but origin servers are still being hammered.", color: "#ca8a04", tier: "confirmation" },
+    { title: "Attack Escalates", text: "Traffic peaks at {{bandwidth}}. The upstream ISP is threatening to null-route your ASN.", color: "#dc2626", tier: "confirmation" },
   ],
   insider: [
-    { title: "HR Records Pulled", text: "The employee filed a grievance three months ago. Termination proceedings were underway.", color: "#ea580c" },
-    { title: "USB Evidence Found", text: "Physical security log shows the employee badged into the server room and plugged in a USB device last Tuesday.", color: "#dc2626" },
-    { title: "Legal Hold Required", text: "Legal instructs IT: preserve all logs and accounts. Do not disable — monitor only.", color: "#ca8a04" },
+    { title: "Odd Access Pattern Noticed", text: "A manager mentions that one team member has been logging in at unusual hours lately. It's probably nothing, but it stood out.", color: "#ca8a04", tier: "investigative" },
+    { title: "Data Usage Anomaly", text: "A routine report shows one account downloading noticeably more data than its typical baseline over the past week.", color: "#ca8a04", tier: "investigative" },
+    { title: "HR Records Pulled", text: "The employee filed a grievance three months ago. Termination proceedings were underway.", color: "#ea580c", tier: "confirmation" },
+    { title: "USB Evidence Found", text: "Physical security log shows the employee badged into the server room and plugged in a USB device last Tuesday.", color: "#dc2626", tier: "confirmation" },
+    { title: "Legal Hold Required", text: "Legal instructs IT: preserve all logs and accounts. Do not disable — monitor only.", color: "#ca8a04", tier: "confirmation" },
   ],
   phishing: [
-    { title: "Wire Transfer Initiated", text: "Finance confirms a {{wire}} wire was sent before the email was flagged.", color: "#dc2626" },
-    { title: "Additional Targets Identified", text: "Similar emails were sent to 12 other executives. Two others clicked the link.", color: "#ea580c" },
-    { title: "Credential Harvest Suspected", text: "The phishing link led to a spoofed login page. Assume all credentials entered are compromised.", color: "#dc2626" },
+    { title: "Suspicious Email Reported", text: "An employee forwards an email to IT that seemed slightly off — they didn't act on it, just flagged it as odd.", color: "#ca8a04", tier: "investigative" },
+    { title: "Finance Flags a Request", text: "Someone in finance mentions an unusual request came through that didn't quite match how things are normally done, but it's not yet clear if anything happened.", color: "#ca8a04", tier: "investigative" },
+    { title: "Wire Transfer Initiated", text: "Finance confirms a {{wire}} wire was sent before the email was flagged.", color: "#dc2626", tier: "confirmation" },
+    { title: "Additional Targets Identified", text: "Similar emails were sent to 12 other executives. Two others clicked the link.", color: "#ea580c", tier: "confirmation" },
+    { title: "Credential Harvest Suspected", text: "The phishing link led to a spoofed login page. Assume all credentials entered are compromised.", color: "#dc2626", tier: "confirmation" },
   ],
   "supply-chain": [
-    { title: "CISA Alert Issued", text: "CISA releases a public advisory: 3,000+ organizations may be affected by the same update.", color: "#dc2626" },
-    { title: "Vendor Patch Released", text: "The affected vendor issued an emergency patch, but applying it requires a full reinstall.", color: "#ea580c" },
-    { title: "C2 Traffic Detected", text: "EDR identifies beaconing to a known C2 server from 17 endpoints post-update.", color: "#dc2626" },
+    { title: "Unexpected Update Behavior", text: "Several endpoints behave oddly after a routine software update — nothing catastrophic, just enough inconsistency that IT is asking questions.", color: "#ca8a04", tier: "investigative" },
+    { title: "Vendor Behaving Unusually", text: "A vendor's support portal or communications seem slightly different than normal, prompting a few raised eyebrows internally.", color: "#ca8a04", tier: "investigative" },
+    { title: "CISA Alert Issued", text: "CISA releases a public advisory: 3,000+ organizations may be affected by the same update.", color: "#dc2626", tier: "confirmation" },
+    { title: "Vendor Patch Released", text: "The affected vendor issued an emergency patch, but applying it requires a full reinstall.", color: "#ea580c", tier: "confirmation" },
+    { title: "C2 Traffic Detected", text: "EDR identifies beaconing to a known C2 server from 17 endpoints post-update.", color: "#dc2626", tier: "confirmation" },
   ],
 };
 
@@ -1252,7 +1282,7 @@ function buildSystemPrompt(config, scenario, playbook, phase, participants, turn
       // IMPORTANT: at generation time the phase has NOT changed yet — this response is
       // still, technically, the last response of the CURRENT phase. Frame the shift as
       // imminent/in-progress, not as an already-completed fact, or it reads as premature.
-      turnBudget += ` This is the FINAL turn for this phase — the app will advance to the **${nextPhase}** phase immediately after this response, regardless of what you write. Do NOT close with a generic action-inviting question about the current phase. Instead: briefly resolve or acknowledge the team's last action in this phase, then narrate the team's focus naturally turning toward ${nextPhase} as a direct consequence of what just happened — describe what's now coming into view or what new question the team must confront — and end with a single action-inviting question suited to that pivot. Frame this as the team's attention SHIFTING TOWARD ${nextPhase}, not as though ${nextPhase} has already fully started — avoid declarative phrasing like "[Phase] begins now" or "[Phase] has begun"; this response is still closing out the current phase, even as it points toward what's next. Do not mention turn limits, caps, or the app's mechanics to the team; narrate the pivot purely as an in-world development, the way a real incident naturally evolves from one stage to the next.`;
+      turnBudget += ` This is the FINAL turn for this phase — the app will advance to the **${nextPhase}** phase immediately after this response, regardless of what you write. Do NOT close with a generic action-inviting question about the current phase. Instead: briefly resolve or acknowledge the team's last action in this phase, then narrate the team's focus turning toward ${nextPhase}. Because the team is being moved forward by having exhausted their available turns rather than by their own declared readiness, frame this pivot with a NEGATIVE, pressured undertone plausible for ${scenario.name} — e.g. a CEO or executive demanding visible progress, an operations lead saying the business cannot wait any longer, a regulator's clock ticking, mounting media attention, or another pressure that fits this scenario — rather than a calm, well-prepared handoff. Describe what's now coming into view or what new question the team must confront under that pressure, and end with a single action-inviting question suited to that pivot. Frame this as the team's attention SHIFTING TOWARD ${nextPhase}, not as though ${nextPhase} has already fully started — avoid declarative phrasing like "[Phase] begins now" or "[Phase] has begun"; this response is still closing out the current phase, even as it points toward what's next. Do not mention turn limits, caps, or the app's mechanics to the team; narrate the pivot purely as an in-world development, the way a real incident naturally evolves from one stage to the next.`;
     } else if (nextPhase && turnNumber === maxTurns - 1) {
       // TELEGRAPH: one turn remaining — begin steering toward a natural wrap-up so the
       // eventual transition (next message) doesn't feel abrupt. Deliberately omit the next
@@ -1264,7 +1294,17 @@ function buildSystemPrompt(config, scenario, playbook, phase, participants, turn
   }
 
   const mysteryBlock = mystery
-    ? `\n\nMYSTERY SCENARIO: The team has NOT been told what type of incident this is — that's the point of the exercise. Never state, name, or directly hint at the scenario's category or title (e.g. do not say or imply "ransomware," "DDoS," "insider threat," "phishing," "business email compromise," "data exfiltration," "supply chain compromise," or the scenario's title "${scenario.name}") anywhere in your response, including the opening scene-setting message. Describe only the technical symptoms, indicators, and consequences the team would actually observe, and let them diagnose the incident type themselves through their own investigation and playbook knowledge. If and only if the team correctly identifies the incident type through their own actions or reasoning, you may confirm it naturally as the scenario progresses — never volunteer it first.`
+    ? `\n\nMYSTERY SCENARIO: The team has NOT been told what type of incident this is — that's the point of the exercise. Never state, name, or directly hint at the scenario's category or title (e.g. do not say or imply "ransomware," "DDoS," "insider threat," "phishing," "business email compromise," "data exfiltration," "supply chain compromise," or the scenario's title "${scenario.name}") anywhere in your response, including the opening scene-setting message. The opening scene-setting message will be provided to you verbatim as a generic, category-agnostic business/user-facing symptom — reproduce it faithfully (light rewording for flow is fine) and do NOT layer in any technical indicator, mechanism, or category hint of your own on top of it. From the team's first action onward, describe only the technical symptoms, indicators, and consequences the team would actually observe, and let them diagnose the incident type themselves through their own investigation and playbook knowledge. If and only if the team correctly identifies the incident type through their own actions or reasoning, you may confirm it naturally as the scenario progresses — never volunteer it first.`
+    : "";
+
+  // Complements mysteryBlock: for explicitly-selected (non-mystery) scenarios, the team
+  // already knows the incident CATEGORY (they picked it at setup), so hiding that would be
+  // pointless. Instead, gate the ROOT CAUSE / SOURCE — the specific technical mechanism,
+  // attacker infrastructure, exploited vulnerability, or insider identity — behind
+  // investigative actions, so the exercise still requires digging (log review, auth audits,
+  // EDR/network tooling, vendor calls) rather than handing over the answer in the opening.
+  const rootCauseBlock = !mystery
+    ? `\n\nROOT-CAUSE INVESTIGATION: The team knows this is being run as a "${scenario.name}" exercise, but they have NOT yet been given the specific technical root cause, attack source, or mechanism behind it. Do not volunteer specific technical indicators — attacker infrastructure, exploited vulnerability/CVE, compromised credentials, exact log entries, protocol/port details, data volumes, or an insider's identity — until the team takes a plausible investigative action that would surface that information (e.g. reviewing logs, auditing authentication history, engaging EDR/network tooling, contacting a vendor, pulling access records). Until they investigate, describe only observable symptoms and business impact — what non-technical staff or monitoring dashboards would notice. Once an action would plausibly reveal a specific technical detail, disclose it as a natural consequence of that action, not as a gift.`
     : "";
 
   const industry = INDUSTRIES.find(i => i.id === companyProfile?.industry);
@@ -1286,8 +1326,11 @@ CORE BEHAVIOR:
 - If the team makes an incorrect or incomplete decision, do not correct them directly. Let the simulation consequences play out — introduce a realistic complication that results from their choice (e.g. delayed containment leads to lateral spread, missed notification triggers a regulatory issue).
 - If the team misses a critical step and moves on, surface the gap as a scenario event: "Meanwhile, [consequence of the missed step] has now occurred."
 - Never volunteer the right answer. Never ask "have you considered X?" unless they have explicitly asked for a hint.
+- Do not explain what the current phase, framework, or playbook requires, or what steps the team is "supposed" to take at this stage — assume the team already knows their own playbook. The exercise exists to test that knowledge, not teach it. Reserve any framework or phase guidance for HINT MODE below, and only when a participant explicitly asks for one.
+- Report observable facts and outcomes only — do not evaluate, judge, or benchmark them against a standard, best practice, or "what guidance recommends" (e.g. do not say something like "the retention window is narrower than standard guidance recommends for an incident of this nature"). State what IS — configurations, findings, results — and let the team determine on their own whether it's adequate; don't hand them the assessment. That kind of evaluation belongs in the After-Action Report afterward, not mid-exercise.
+- State scenario developments factually. Do not editorialize or build suspense about whether a situation is serious (avoid hedging or dramatic framing like "could be nothing," "nothing dramatic — yet," "raises an eyebrow," or similar) — report only what was observed. This applies to the narrative body only; it does not override the mandatory closing line below, which every response still needs.
 - Keep responses under 150 words unless delivering a major scenario development.
-- End EVERY response with a single short line on its own that invites action — e.g. "What is your team's next action?" or "How does your team respond?" or "The clock is ticking — what do you do?" Vary the phrasing; never repeat the same closing line twice in a row.
+- MANDATORY: end EVERY response with a single short line on its own that invites action, e.g. "What is your team's next action?" or "How does your team respond?" or "The clock is ticking — what do you do?" Vary the phrasing; never repeat the same closing line twice in a row. This is the one place where inviting the team to act is not "leading" them — it is required scaffolding, not a suggestion of what to do. The sole exception is the very first opening scene-setting message, whose own instructions explicitly say not to ask a question — follow that instruction as written for that one message only; every response after it still needs this closing line.
 
 HINT MODE:
 - If a participant explicitly asks for a hint, help, direction, or says they are stuck, briefly shift into hint mode: acknowledge the request, then offer one directional nudge grounded in ${playbook.name} — not the answer, just a pointer toward the right area of thinking. Return to observer mode immediately after.
@@ -1304,7 +1347,7 @@ MULTI-ROLE RESPONSES:
 
 Tone: ${toneMap[config.tone]}.
 Difficulty: ${diffMap[config.difficulty]}.
-Complexity: ${complexityMap[config.complexity]}.${focus}${custom}${turnBudget}${mysteryBlock}${companyBlock}`;
+Complexity: ${complexityMap[config.complexity]}.${focus}${custom}${turnBudget}${mysteryBlock}${rootCauseBlock}${companyBlock}`;
 }
 
 // Format a set of simultaneous per-role responses into a single labeled block
@@ -1973,7 +2016,14 @@ function ParticipantSetup({ onStart, lastPlayed }) {
               className="btn btn-primary"
               disabled={!canProceed}
               style={!canProceed ? { opacity: 0.4, pointerEvents: "none" } : {}}
-            onClick={() => onStart({ ...selected, participants: activeParticipants, usedRandomizer })}>
+            onClick={() => onStart({
+              ...selected,
+              participants: activeParticipants,
+              usedRandomizer,
+              // Seed once at launch so the same generic opener is used consistently across
+              // resumes of this session, rather than re-randomizing on every reload.
+              mysteryOpenerIndex: usedRandomizer ? Math.floor(Math.random() * MYSTERY_OPENERS.length) : undefined,
+            })}>
             Launch Exercise →
           </button>}
       </div>
@@ -2088,7 +2138,7 @@ function MultiRoleInputPanel({ participants, onSubmit, onCancel, loading }) {
   );
 }
 
-function MultiRoleMessageGroup({ msg }) {
+const MultiRoleMessageGroup = memo(function MultiRoleMessageGroup({ msg }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
       <div style={{ fontSize: 10, color: "#3a5a7a", fontFamily: "'Share Tech Mono', monospace", letterSpacing: "0.05em" }}>
@@ -2105,7 +2155,42 @@ function MultiRoleMessageGroup({ msg }) {
       ))}
     </div>
   );
-}
+});
+
+// A single chat bubble, extracted from AIChat's render loop and wrapped in React.memo so it
+// only re-renders when ITS OWN message data actually changes — not whenever an ancestor
+// re-renders for an unrelated reason (e.g. the per-second phase/scenario countdown ticking in
+// ExerciseView, which previously forced this entire list to be recreated every second). Takes
+// only plain data as props (no callbacks to go stale), so memoizing it carries no risk of the
+// stale-closure bugs a broader memoization of AIChat itself could introduce. Fixes reported
+// text-selection flicker: with the old inline rendering, this list's elements were torn down
+// and reconciled fresh every second even though their content was usually unchanged, which is
+// a well-known source of intermittent selection loss in React apps using
+// dangerouslySetInnerHTML — memoizing here removes that churn entirely for messages whose
+// content hasn't actually changed.
+const ChatMessage = memo(forwardRef(function ChatMessage({ msg }, ref) {
+  // Strip [OPTION_X] and [ADVANCE_PHASE] markers from every AI message
+  const displayText = msg.role === "ai"
+    ? stripAdvancePhase(stripOptions(msg.text))
+    : msg.text;
+  return (
+    <div className="chat-msg" ref={ref}>
+      <div className={`chat-avatar${msg.role === "ai" ? " ai" : ""}`}>
+        {msg.role === "ai" ? "AI" : (msg.author?.[0] || "U").toUpperCase()}
+      </div>
+      <div className="chat-body">
+        <div className="chat-meta">
+          <span>{msg.role === "ai" ? "AI Facilitator" : msg.author}</span>
+          <span style={{ opacity: 0.5 }}>·</span>
+          <span>{msg.time}</span>
+          {msg.role === "ai" && <VoiceButton text={displayText} />}
+        </div>
+        <div className={`chat-text${msg.role === "ai" ? " ai-msg" : ""}`}
+          dangerouslySetInnerHTML={{ __html: displayText.replace(/\n/g, "<br/>") }} />
+      </div>
+    </div>
+  );
+}));
 
 function AIChat({ scenario, phase, messages, onMessage, loading, participants, multiMode, onToggleMultiMode, onMultiSend, hideScenarioName, exerciseConcluded, onCompleteExercise }) {
   const [input, setInput] = useState("");
@@ -2203,27 +2288,7 @@ function AIChat({ scenario, phase, messages, onMessage, loading, participants, m
           if (m.multi) {
             return <MultiRoleMessageGroup key={i} msg={m} />;
           }
-          // Strip [OPTION_X] and [ADVANCE_PHASE] markers from every AI message
-          const displayText = m.role === "ai"
-            ? stripAdvancePhase(stripOptions(m.text))
-            : m.text;
-          return (
-            <div key={i} className="chat-msg" ref={isThisLastAI ? lastAiMsgRef : null}>
-              <div className={`chat-avatar${m.role === "ai" ? " ai" : ""}`}>
-                {m.role === "ai" ? "AI" : (m.author?.[0] || "U").toUpperCase()}
-              </div>
-              <div className="chat-body">
-                <div className="chat-meta">
-                  <span>{m.role === "ai" ? "AI Facilitator" : m.author}</span>
-                  <span style={{ opacity: 0.5 }}>·</span>
-                  <span>{m.time}</span>
-                  {m.role === "ai" && <VoiceButton text={displayText} />}
-                </div>
-                <div className={`chat-text${m.role === "ai" ? " ai-msg" : ""}`}
-                  dangerouslySetInnerHTML={{ __html: displayText.replace(/\n/g, "<br/>") }} />
-              </div>
-            </div>
-          );
+          return <ChatMessage key={i} msg={m} ref={isThisLastAI ? lastAiMsgRef : null} />;
         })}
         {loading && (
           <div className="chat-msg" ref={lastAiMsgRef}>
@@ -2341,11 +2406,14 @@ function AIChat({ scenario, phase, messages, onMessage, loading, participants, m
 // ── Injects ───────────────────────────────────────────────────
 function InjectPanel({ scenario, onInject, companyProfile }) {
   const injects = (INJECT_LIBRARY[scenario?.id] || []).map(inj => interpolateInject(inj, companyProfile));
-  return (
-    <div className="card">
-      <div className="card-title">SCENARIO INJECTS</div>
+  const investigative = injects.filter(inj => inj.tier !== "confirmation");
+  const confirmation = injects.filter(inj => inj.tier === "confirmation");
+  const renderGroup = (label, hint, list) => list.length === 0 ? null : (
+    <div>
+      <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", color: "#5a7a9a", marginBottom: 4 }}>{label}</div>
+      <div style={{ fontSize: 11, color: "#3a5a7a", marginBottom: 10 }}>{hint}</div>
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        {injects.map((inj, i) => (
+        {list.map((inj, i) => (
           <div key={i} className="inject-item" style={{ borderLeft: `3px solid ${inj.color}` }}>
             <div className="inject-title"><span className="inject-badge" style={{ background: inj.color }} />{inj.title}</div>
             <div className="inject-text">{inj.text}</div>
@@ -2354,6 +2422,15 @@ function InjectPanel({ scenario, onInject, companyProfile }) {
             </div>
           </div>
         ))}
+      </div>
+    </div>
+  );
+  return (
+    <div className="card">
+      <div className="card-title">SCENARIO INJECTS</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+        {renderGroup("🔍 INVESTIGATIVE", "Ambiguous leads — safe to use before the team has confirmed a cause.", investigative)}
+        {renderGroup("✅ CONFIRMATION", "Root-cause / source specifics — hold until the team's investigation warrants revealing them.", confirmation)}
       </div>
     </div>
   );
@@ -2994,6 +3071,7 @@ function useChatStorage(session) {
         facilitatorConfig: liveFacilitatorConfig || session?.facilitatorConfig,
         companyProfile: session?.companyProfile,
         usedRandomizer: session?.usedRandomizer,
+        mysteryOpenerIndex: session?.mysteryOpenerIndex,
         savedAt: new Date().toISOString(),
       }));
     } catch (e) {
@@ -3009,6 +3087,7 @@ function useChatStorage(session) {
             facilitatorConfig: liveFacilitatorConfig || session?.facilitatorConfig,
             companyProfile: session?.companyProfile,
             usedRandomizer: session?.usedRandomizer,
+            mysteryOpenerIndex: session?.mysteryOpenerIndex,
             savedAt: new Date().toISOString(),
           }));
         } catch { /* silent */ }
@@ -3267,9 +3346,10 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
   const initSession = async () => {
     setLoading(true);
     try {
+      const mysteryOpener = MYSTERY_OPENERS[session.mysteryOpenerIndex ?? 0];
       const openingInstruction = session.usedRandomizer
-        ? `Begin the tabletop exercise. Set the scene in 2-3 paragraphs: describe the initial indicators of compromise consistent with this incident, using specific, realistic technical details and a timeline — but do NOT name or hint at the scenario's category or title anywhere in your response (per the MYSTERY SCENARIO instruction). Orient the team to the ${phases[0]} phase of ${playbook.name}. End by stating the situation as it currently stands — do not ask a question or suggest what the team should do. Wait for them to act.`
-        : `Begin the tabletop exercise. Set the scene in 2-3 paragraphs: describe the initial indicators of compromise for ${session.scenario.name} with specific, realistic technical details and timeline. Orient the team to the ${phases[0]} phase of ${playbook.name}. End by stating the situation as it currently stands — do not ask a question or suggest what the team should do. Wait for them to act.`;
+        ? `Begin the tabletop exercise. Write 2-3 flowing narrative paragraphs — do NOT use markdown headers, section titles, horizontal rules, or bullet lists; this is a single continuous scene-setting message, not a templated report. Weave in this scene-setting description almost verbatim as your opening (light rewording for flow is fine, but preserve its ambiguity and do not add any technical indicator, mechanism, or category hint of your own): "${mysteryOpener}" Per CORE BEHAVIOR, do not explain what the ${phases[0]} phase of ${playbook.name} requires or what the team should be doing about it — just present the situation. End by stating the situation as it currently stands — do not ask a question or suggest what the team should do. Wait for them to act.`
+        : `Begin the tabletop exercise. Write 2-3 flowing narrative paragraphs — do NOT use markdown headers, section titles, horizontal rules, or bullet lists; this is a single continuous scene-setting message, not a templated report. Describe the initial business/user-facing symptoms and impact of this ${session.scenario.name} incident — what staff, customers, or monitoring tools would notice — WITHOUT revealing the specific technical root cause, attack source, or mechanism (per the ROOT-CAUSE INVESTIGATION instruction). Per CORE BEHAVIOR, do not explain what the ${phases[0]} phase of ${playbook.name} requires or what steps the team should take — just present the situation and let the team's own playbook knowledge guide their next move. End by stating the situation as it currently stands — do not ask a question or suggest what the team should do. Wait for them to act.`;
       const text = await callClaude(
         [{ role: "user", content: openingInstruction }],
         getSystemPrompt()
@@ -3279,8 +3359,8 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
       setMessages([{
         role: "ai",
         text: session.usedRandomizer
-          ? `Exercise initiated. Indicators of a security incident have been detected. Begin discussing your team's initial response.`
-          : `Exercise initiated. Begin discussing your initial response to: ${session.scenario.description}`,
+          ? MYSTERY_OPENERS[session.mysteryOpenerIndex ?? 0]
+          : `Exercise initiated. Your team is responding to a ${session.scenario.name} incident. Begin investigating to determine the root cause and appropriate response.`,
         time: new Date().toLocaleTimeString(),
       }]);
     }
@@ -3377,8 +3457,9 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
     setTab("discussion");
   };
 
-  const advancePhase = (auto = false, reason = "turn") => {
+  const advancePhase = async (auto = false, reason = "turn") => {
     if (phaseIdx >= phases.length - 1) return;
+    const outgoingPhase = currentPhase;
     const next = phases[phaseIdx + 1];
     setPhaseIdx(i => i + 1);
     setTurnsInPhase(0);
@@ -3395,20 +3476,44 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
       label: auto ? `Phase auto-advanced: ${next} (${reasonLabel})` : `Phase: ${next}`,
       time: new Date().toLocaleTimeString(),
     }]);
-    // Manual/AI-suggested advances (button click) have no prior AI narration of the
-    // transition, so post a short transition message. Turn-limit auto-advances rely on
-    // the facilitator's own final-turn response — generated per the FINAL TURN instruction
-    // in buildSystemPrompt — to have already narrated the shift, so no second message is
-    // posted here. Time-limit auto-advances can fire with no in-flight AI response at all
-    // (the team may simply have gone quiet), so they always get the same transition message
-    // a manual advance would.
-    if (!auto || reason === "time") {
+    // Turn-limit auto-advances rely on the facilitator's own final-turn response — generated
+    // per the FINAL TURN instruction in buildSystemPrompt, which now also carries the
+    // negative/pressured framing requested below — to have already narrated the shift, so no
+    // second message is posted here. Manual advances (button click) and time-limit
+    // auto-advances (which can fire with no in-flight AI response at all, if the team simply
+    // went quiet) both get a freshly AI-generated transition message, in two different tones:
+    // manual advances are framed positively (the team judged itself ready), time-limit
+    // advances are framed negatively/under pressure (moved forward by the clock, not choice).
+    if (auto && reason === "turn") return;
+
+    // Build a system prompt for the NEW phase directly, rather than via getSystemPrompt() —
+    // that helper reads currentPhase/nextPhase/isLastPhase from render-scope state, which
+    // won't reflect the setPhaseIdx() call above until the next render (stale closure).
+    const newPhaseIdx = phaseIdx + 1;
+    const newIsLastPhase = newPhaseIdx >= phases.length - 1;
+    const newNextPhase = newIsLastPhase ? null : phases[newPhaseIdx + 1];
+    const transitionSystemPrompt = buildSystemPrompt(
+      facilitatorConfig, session.scenario, playbook, next, session.participants,
+      0, facilitatorConfig.maxTurns, newNextPhase, newIsLastPhase, session.usedRandomizer, session.companyProfile
+    );
+    const transitionInstruction = reason === "time"
+      ? `Time ran out for the ${outgoingPhase} phase before the team indicated they were ready to move on — the organization is being pushed into ${next} without full readiness. Write a short (2-4 sentence) transition message in flowing prose (no markdown headers, horizontal rules, or bullet lists) with a NEGATIVE, pressured tone plausible for ${session.scenario.name} — e.g. a CEO or executive demanding visible progress, an operations lead saying the business cannot wait any longer, a regulator's clock ticking, mounting media attention, or another pressure that fits this scenario. Narrate the shift into ${next} as forced by circumstance, not a deliberate, well-prepared choice. Base this strictly on what the team ACTUALLY did and observed during the ${outgoingPhase} phase, per the conversation above — do NOT invent confirmations, findings, or completed steps the team didn't actually establish. If it fits, it's fine (and often more accurate) to reference specifically what was left unresolved or unaddressed when time ran out, rather than inventing new unrelated events. Per CORE BEHAVIOR, do not explain what ${next} requires or what steps the team should take — just set the scene. Do not mention "time limit," "turn limit," or the app's mechanics directly — frame this purely as an in-world development. End with a single action-inviting line suited to ${next} that reflects the urgency.`
+      : `The team has determined they have what they need and is manually moving from the ${outgoingPhase} phase into ${next}. Write a short (2-4 sentence) transition message in flowing prose (no markdown headers, horizontal rules, or bullet lists) with a warranted, positive/confident tone. Base this strictly on what the team ACTUALLY did and found during the ${outgoingPhase} phase, per the conversation above — do NOT invent confirmations, findings, or completed steps the team didn't actually establish (e.g. do not claim contact lists were verified, thresholds were tuned, or anything else the team never did or mentioned). If a specific, true detail from their own actions supports a confident, forward-moving tone, reference it briefly and accurately; otherwise keep the positive framing general (e.g. "the team feels ready to move forward") rather than fabricating specifics. Per CORE BEHAVIOR, do not explain what ${next} requires or what steps the team should take — just set the scene for ${next}. End with a single action-inviting line suited to ${next}.`;
+    setLoading(true);
+    try {
+      const history = await buildApiHistory(messages);
+      const text = await callClaude([...history, { role: "user", content: transitionInstruction }], transitionSystemPrompt);
+      setMessages(prev => [...prev, { role: "ai", text, time: new Date().toLocaleTimeString() }]);
+    } catch {
       setMessages(prev => [...prev, {
         role: "ai",
-        text: `Moving into the **${next}** phase. What are your team's priorities and immediate actions at this stage?`,
+        text: reason === "time"
+          ? `Time has run out for ${outgoingPhase}. Whether the team is ready or not, the situation is moving into the **${next}** phase. What is your team's next action?`
+          : `Moving into the **${next}** phase. What are your team's priorities and immediate actions at this stage?`,
         time: new Date().toLocaleTimeString(),
       }]);
     }
+    setLoading(false);
   };
 
   // Time-limit auto-advance — checked on every clock tick (not just on message send),
@@ -3452,7 +3557,7 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
           >✕ End Early</button>
           {/* Next Phase / Complete */}
           {phaseIdx < phases.length - 1
-            ? <button className="btn btn-ghost btn-sm" style={{ margin: "8px 0" }} onClick={() => advancePhase(false)}>Next Phase →</button>
+            ? <button className="btn btn-ghost btn-sm" style={{ margin: "8px 0" }} disabled={loading} onClick={() => advancePhase(false)}>{loading ? "Advancing…" : "Next Phase →"}</button>
             : <button className="btn btn-success btn-sm" style={{ margin: "8px 0" }} onClick={() => setConfirmModal("complete")}>Complete Exercise ✓</button>}
         </div>
         <div style={{ padding: "10px 24px 12px", background: "#0a0f18" }}>
@@ -3746,6 +3851,7 @@ export default function App() {
       facilitatorConfig: normalizeFacilitatorConfig(savedSession.facilitatorConfig),
       companyProfile: normalizeCompanyProfile(savedSession.companyProfile),
       usedRandomizer: !!savedSession.usedRandomizer,
+      mysteryOpenerIndex: savedSession.mysteryOpenerIndex ?? 0,
       _resumeData: savedSession,
     };
     // Seed the live "total session time" synchronously, mirroring the exact same
