@@ -170,7 +170,7 @@ const DEFAULT_FACILITATOR = {
 
 // Maps the old "probing" field's values (gentle/balanced/aggressive) to the renamed
 // "complexity" field's values (narrow/standard/branching), for sessions saved to
-// localStorage before this rename shipped.
+// persistent storage before this rename shipped.
 const LEGACY_COMPLEXITY_MAP = { gentle: "narrow", balanced: "standard", aggressive: "branching" };
 
 // Normalizes a possibly-stale saved facilitatorConfig into the current shape: fills in
@@ -2994,26 +2994,26 @@ const getInjectClosing = (color) => {
   return pool[Math.floor(Math.random() * pool.length)];
 };
 const storageKey = (session) =>
-  `tactician:${session.sessionName}:${session.scenario.id}`.replace(/\s+/g, "_").slice(0, 120);
+  `tactician:${session.sessionName}:${session.scenario.id}`.replace(/\s+/g, "_").replace(/['"]/g, "").slice(0, 120);
 
 // Remove every other saved-in-progress session key, keeping only (optionally) the one
 // belonging to a just-launched session. Called at the moment a new exercise actually
 // launches — not when a resume prompt is merely declined — so a declined/abandoned
 // session remains resumable until the person commits to a genuinely new exercise.
-const clearOtherSessions = (keepKey = null) => {
+const clearOtherSessions = async (keepKey = null) => {
   try {
-    Object.keys(localStorage)
-      .filter(k => k.startsWith("tactician:") && k !== LAST_PLAYED_KEY && k !== keepKey)
-      .forEach(k => localStorage.removeItem(k));
+    const { keys } = (await window.storage.list("tactician:")) || { keys: [] };
+    const toDelete = keys.filter(k => k !== LAST_PLAYED_KEY && k !== keepKey);
+    await Promise.all(toDelete.map(k => window.storage.delete(k)));
   } catch { /* silent */ }
 };
 
 const LAST_PLAYED_KEY = "tactician:lastPlayed";
 
 const lastPlayedStorage = {
-  save(scenario, playbook, sessionName) {
+  async save(scenario, playbook, sessionName) {
     try {
-      localStorage.setItem(LAST_PLAYED_KEY, JSON.stringify({
+      await window.storage.set(LAST_PLAYED_KEY, JSON.stringify({
         scenarioId: scenario.id,
         scenarioName: scenario.name,
         scenarioIcon: scenario.icon,
@@ -3024,23 +3024,23 @@ const lastPlayedStorage = {
       }));
     } catch { /* silent */ }
   },
-  load() {
+  async load() {
     try {
-      const raw = localStorage.getItem(LAST_PLAYED_KEY);
-      return raw ? JSON.parse(raw) : null;
+      const result = await window.storage.get(LAST_PLAYED_KEY);
+      return result?.value ? JSON.parse(result.value) : null;
     } catch { return null; }
   },
 };
 
-// ── localStorage chat persistence hook ───────────────────────
+// ── Persistent chat storage hook (window.storage) ────────────
 function useChatStorage(session) {
   const key = storageKey(session);
 
-  const load = () => {
+  const load = async () => {
     try {
-      const raw = localStorage.getItem(key);
-      if (!raw) return null;
-      return JSON.parse(raw); // { messages, timeline, phaseIdx, turnsInPhase, savedAt }
+      const result = await window.storage.get(key);
+      if (!result?.value) return null;
+      return JSON.parse(result.value); // { messages, timeline, phaseIdx, turnsInPhase, savedAt }
     } catch { return null; }
   };
 
@@ -3060,42 +3060,30 @@ function useChatStorage(session) {
   // timestamps) are now plain durations — the exact remaining/elapsed seconds at save time —
   // rather than a wall-clock start point to do math against on resume. This is what makes
   // resuming freeze the clock while away instead of continuing to drain it in the background.
-  const save = (messages, timeline, phaseIdx, session, turnsInPhase, phaseRemainingSec, scenarioElapsedSec, liveFacilitatorConfig) => {
+  const save = async (messages, timeline, phaseIdx, session, turnsInPhase, phaseRemainingSec, scenarioElapsedSec, liveFacilitatorConfig) => {
+    const payload = {
+      messages, timeline, phaseIdx, turnsInPhase, phaseRemainingSec, scenarioElapsedSec,
+      // Persist enough session metadata to reconstruct on resume
+      sessionName: session?.sessionName,
+      playbook: session?.playbook,
+      participants: session?.participants,
+      facilitatorConfig: liveFacilitatorConfig || session?.facilitatorConfig,
+      companyProfile: session?.companyProfile,
+      usedRandomizer: session?.usedRandomizer,
+      mysteryOpenerIndex: session?.mysteryOpenerIndex,
+      savedAt: new Date().toISOString(),
+    };
     try {
-      localStorage.setItem(key, JSON.stringify({
-        messages, timeline, phaseIdx, turnsInPhase, phaseRemainingSec, scenarioElapsedSec,
-        // Persist enough session metadata to reconstruct on resume
-        sessionName: session?.sessionName,
-        playbook: session?.playbook,
-        participants: session?.participants,
-        facilitatorConfig: liveFacilitatorConfig || session?.facilitatorConfig,
-        companyProfile: session?.companyProfile,
-        usedRandomizer: session?.usedRandomizer,
-        mysteryOpenerIndex: session?.mysteryOpenerIndex,
-        savedAt: new Date().toISOString(),
-      }));
+      await window.storage.set(key, JSON.stringify(payload));
     } catch (e) {
-      // Quota exceeded — prune oldest messages and retry once
-      if (e.name === "QuotaExceededError") {
-        try {
-          const trimmed = messages.slice(-30);
-          localStorage.setItem(key, JSON.stringify({
-            messages: trimmed, timeline, phaseIdx, turnsInPhase, phaseRemainingSec, scenarioElapsedSec,
-            sessionName: session?.sessionName,
-            playbook: session?.playbook,
-            participants: session?.participants,
-            facilitatorConfig: liveFacilitatorConfig || session?.facilitatorConfig,
-            companyProfile: session?.companyProfile,
-            usedRandomizer: session?.usedRandomizer,
-            mysteryOpenerIndex: session?.mysteryOpenerIndex,
-            savedAt: new Date().toISOString(),
-          }));
-        } catch { /* silent */ }
-      }
+      // Write failed (e.g. payload over the storage size limit) — prune oldest messages and retry once
+      try {
+        await window.storage.set(key, JSON.stringify({ ...payload, messages: messages.slice(-30) }));
+      } catch { /* silent */ }
     }
   };
 
-  const clear = () => { try { localStorage.removeItem(key); } catch { /* silent */ } };
+  const clear = async () => { try { await window.storage.delete(key); } catch { /* silent */ } };
 
   return { load, save, clear };
 }
@@ -3180,6 +3168,12 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
   // while the tab is backgrounded is handled gracefully without ever counting time that
   // elapsed while this component wasn't mounted at all.
   const lastTickRef = useRef(Date.now());
+  // Mirror the latest phaseRemainingSec/scenarioElapsedSec outside of React state so the
+  // persist effect below can read the CURRENT tick value without depending on it directly —
+  // see that effect's comment for why depending on it directly was a problem after the
+  // window.storage migration. Kept in sync by the ticking effect on every 1-second tick.
+  const phaseRemainingSecRef = useRef(null);
+  const scenarioElapsedSecRef = useRef(0);
   const [messages, setMessages] = useState([]);
   const [timeline, setTimeline] = useState([{ label: "Exercise started", detail: `${session.scenario.name} · ${playbook.name}`, time: new Date().toLocaleTimeString() }]);
   const [loading, setLoading] = useState(false);
@@ -3238,10 +3232,29 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
     return data.content?.find(b => b.type === "text")?.text || "";
   };
 
-  // Persist to localStorage after every message or phase change
+  // Persist session state on every message/phase/turn/config change — deliberately NOT on
+  // every 1-second countdown tick (phaseRemainingSec/scenarioElapsedSec are read from the
+  // refs above instead of being listed as dependencies here). window.storage is a real
+  // (rate-limited) API call, unlike the old synchronous localStorage — saving on every
+  // single tick for the entire length of an exercise risked hammering the storage API
+  // continuously, silently dropping some writes (our error handling swallows failures by
+  // design) and occasionally leaving a resumed session missing recent messages or showing a
+  // stale turn count. The periodic backstop effect below still keeps the countdown/elapsed
+  // time reasonably fresh on its own slower cadence.
   useEffect(() => {
-    if (messages.length > 0) storage.save(messages, timeline, phaseIdx, session, turnsInPhase, phaseRemainingSec, scenarioElapsedSec, facilitatorConfig);
-  }, [messages, timeline, phaseIdx, turnsInPhase, phaseRemainingSec, scenarioElapsedSec, facilitatorConfig]);
+    if (messages.length > 0) storage.save(messages, timeline, phaseIdx, session, turnsInPhase, phaseRemainingSecRef.current, scenarioElapsedSecRef.current, facilitatorConfig);
+  }, [messages, timeline, phaseIdx, turnsInPhase, facilitatorConfig]);
+
+  // Periodic backstop: re-persists the same payload (picking up the latest tick values via
+  // the refs) every 10 seconds, independent of the effect above — so a long stretch where
+  // the team is discussing without sending a chat message still keeps the saved countdown
+  // reasonably current, without writing to storage every single second.
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (messages.length > 0) storage.save(messages, timeline, phaseIdx, session, turnsInPhase, phaseRemainingSecRef.current, scenarioElapsedSecRef.current, facilitatorConfig);
+    }, 10000);
+    return () => clearInterval(id);
+  }, [messages, timeline, phaseIdx, turnsInPhase, facilitatorConfig]);
 
   // Live countdown/elapsed tick — decrements phaseRemainingSec and accumulates
   // scenarioElapsedSec once per second, but ONLY while this component is mounted. Each tick
@@ -3254,8 +3267,16 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
       const now = Date.now();
       const deltaSec = (now - lastTickRef.current) / 1000;
       lastTickRef.current = now;
-      setPhaseRemainingSec(sec => (sec == null ? sec : Math.max(0, sec - deltaSec)));
-      setScenarioElapsedSec(sec => sec + deltaSec);
+      setPhaseRemainingSec(sec => {
+        const next = sec == null ? sec : Math.max(0, sec - deltaSec);
+        phaseRemainingSecRef.current = next;
+        return next;
+      });
+      setScenarioElapsedSec(sec => {
+        const next = sec + deltaSec;
+        scenarioElapsedSecRef.current = next;
+        return next;
+      });
     }, 1000);
     return () => clearInterval(id);
   }, []);
@@ -3271,30 +3292,40 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
       setTurnsInPhase(r.turnsInPhase || 0);
       const resolvedLimit = getPhaseTimeLimitMinutes(facilitatorConfig, phases[restoredPhaseIdx]);
       lastPhaseLimitRef.current = resolvedLimit;
+      let restoredPhaseRemainingSec;
       if (typeof r.phaseRemainingSec === "number") {
         // Current format: the exact remaining duration, saved directly — resume picks up
         // from precisely here regardless of how much real time passed while away.
-        setPhaseRemainingSec(r.phaseRemainingSec);
+        restoredPhaseRemainingSec = r.phaseRemainingSec;
       } else if (typeof r.phaseStartedAt === "number" && resolvedLimit != null) {
         // Migrating a session saved before this duration-based rework existed (it only
         // had a wall-clock start timestamp) — derive ONE last timestamp-based value here
         // so the migration doesn't jump back to a full countdown, then switch entirely to
         // duration-tracking (no more wall-clock math) from this point forward.
-        setPhaseRemainingSec(Math.max(0, resolvedLimit * 60 - (Date.now() - r.phaseStartedAt) / 1000));
+        restoredPhaseRemainingSec = Math.max(0, resolvedLimit * 60 - (Date.now() - r.phaseStartedAt) / 1000);
       } else {
-        setPhaseRemainingSec(resolvedLimit != null ? resolvedLimit * 60 : null);
+        restoredPhaseRemainingSec = resolvedLimit != null ? resolvedLimit * 60 : null;
       }
+      setPhaseRemainingSec(restoredPhaseRemainingSec);
+      phaseRemainingSecRef.current = restoredPhaseRemainingSec;
+
+      let restoredScenarioElapsedSec;
       if (typeof r.scenarioElapsedSec === "number") {
-        setScenarioElapsedSec(r.scenarioElapsedSec);
+        restoredScenarioElapsedSec = r.scenarioElapsedSec;
       } else if (typeof r.scenarioStartedAt === "number") {
-        setScenarioElapsedSec((Date.now() - r.scenarioStartedAt) / 1000);
+        restoredScenarioElapsedSec = (Date.now() - r.scenarioStartedAt) / 1000;
       } else {
-        setScenarioElapsedSec(0);
+        restoredScenarioElapsedSec = 0;
       }
+      setScenarioElapsedSec(restoredScenarioElapsedSec);
+      scenarioElapsedSecRef.current = restoredScenarioElapsedSec;
     } else {
       const resolvedLimit = getPhaseTimeLimitMinutes(facilitatorConfig, phases[0]);
       lastPhaseLimitRef.current = resolvedLimit;
-      setPhaseRemainingSec(resolvedLimit != null ? resolvedLimit * 60 : null);
+      const freshPhaseRemainingSec = resolvedLimit != null ? resolvedLimit * 60 : null;
+      setPhaseRemainingSec(freshPhaseRemainingSec);
+      phaseRemainingSecRef.current = freshPhaseRemainingSec;
+      scenarioElapsedSecRef.current = 0;
       initSession();
     }
     lastTickRef.current = Date.now();
@@ -3312,7 +3343,9 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
     if (!initializedRef.current) return;
     if (phaseLimitMinutes !== lastPhaseLimitRef.current) {
       lastPhaseLimitRef.current = phaseLimitMinutes;
-      setPhaseRemainingSec(phaseLimitMinutes != null ? phaseLimitMinutes * 60 : null);
+      const next = phaseLimitMinutes != null ? phaseLimitMinutes * 60 : null;
+      setPhaseRemainingSec(next);
+      phaseRemainingSecRef.current = next;
     }
   }, [phaseLimitMinutes]);
 
@@ -3470,7 +3503,9 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
     // only for a numeric-value change, would otherwise miss).
     const nextLimit = getPhaseTimeLimitMinutes(facilitatorConfig, next);
     lastPhaseLimitRef.current = nextLimit;
-    setPhaseRemainingSec(nextLimit != null ? nextLimit * 60 : null);
+    const nextPhaseRemainingSec = nextLimit != null ? nextLimit * 60 : null;
+    setPhaseRemainingSec(nextPhaseRemainingSec);
+    phaseRemainingSecRef.current = nextPhaseRemainingSec;
     const reasonLabel = reason === "time" ? "time limit reached" : "turn limit reached";
     setTimeline(prev => [...prev, {
       label: auto ? `Phase auto-advanced: ${next} (${reasonLabel})` : `Phase: ${next}`,
@@ -3750,11 +3785,11 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
           body={`You're currently in the ${currentPhase} phase with ${messages.reduce((acc, m) => m.role === "ai" ? acc : acc + (m.multi ? m.authors.length : 1), 0)} responses logged. Ending early will stop the exercise and take you to the After-Action Report. This cannot be undone.`}
           confirmLabel="End Exercise"
           confirmStyle={{ background: "rgba(220,38,38,0.2)", color: "#f87171", border: "1px solid rgba(220,38,38,0.4)" }}
-          onConfirm={() => {
+          onConfirm={async () => {
             setConfirmModal(null);
             speech.stop(); // stop narration immediately — don't wait for the ExerciseView unmount cleanup
-            lastPlayedStorage.save(session.scenario, session.playbook, session.sessionName);
-            storage.clear();
+            await lastPlayedStorage.save(session.scenario, session.playbook, session.sessionName);
+            await storage.clear();
             onEnd(messages, timeline);
           }}
           onCancel={() => setConfirmModal(null)}
@@ -3767,11 +3802,11 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
           body="This will end the session and generate your After-Action Report. Make sure your team has finished discussing the final phase before proceeding."
           confirmLabel="Complete Exercise ✓"
           confirmStyle={{ background: "rgba(22,163,74,0.2)", color: "#4ade80", border: "1px solid rgba(22,163,74,0.4)" }}
-          onConfirm={() => {
+          onConfirm={async () => {
             setConfirmModal(null);
             speech.stop(); // stop narration immediately — don't wait for the ExerciseView unmount cleanup
-            lastPlayedStorage.save(session.scenario, session.playbook, session.sessionName);
-            storage.clear();
+            await lastPlayedStorage.save(session.scenario, session.playbook, session.sessionName);
+            await storage.clear();
             onEnd(messages, timeline);
           }}
           onCancel={() => setConfirmModal(null)}
@@ -3786,7 +3821,7 @@ export default function App() {
   const [screen, setScreen] = useState("landing"); // landing | resume | setup | exercise | aar
   const [session, setSession] = useState(null);
   const [exerciseData, setExerciseData] = useState({ messages: [], timeline: [], duration: 0 });
-  const [savedSession, setSavedSession] = useState(null); // active unfinished session found in localStorage
+  const [savedSession, setSavedSession] = useState(null); // active unfinished session found in persistent storage
   const [lastPlayed, setLastPlayed] = useState(null);     // most recently completed scenario
   // "Total session time" shown live in the Topbar and recorded as the AAR's final duration.
   // This used to be tracked independently here via a `startTimeRef` timestamp (reset to
@@ -3803,17 +3838,25 @@ export default function App() {
 
   // Load lastPlayed on mount — always show it on scenario selection
   useEffect(() => {
-    setLastPlayed(lastPlayedStorage.load());
+    (async () => setLastPlayed(await lastPlayedStorage.load()))();
   }, []);
 
-  const handleBegin = () => {
+  const handleBegin = async () => {
     // Check for an active unfinished session. Sort by savedAt (most recent first) in case
     // more than one stale session key exists — e.g. leftovers from before this cleanup
     // logic existed — so the most recently active one is what gets offered for resume.
-    const allKeys = Object.keys(localStorage).filter(k => k.startsWith("tactician:") && k !== LAST_PLAYED_KEY);
-    const candidates = allKeys.map(k => {
-      try { return { key: k, ...JSON.parse(localStorage.getItem(k)) }; } catch { return null; }
-    }).filter(Boolean).filter(s => s.messages?.length > 0);
+    let allKeys = [];
+    try {
+      const { keys } = (await window.storage.list("tactician:")) || { keys: [] };
+      allKeys = keys.filter(k => k !== LAST_PLAYED_KEY);
+    } catch { /* no keys yet, or list() failed — fall through to setup like a fresh user */ }
+    const results = await Promise.all(allKeys.map(async k => {
+      try {
+        const result = await window.storage.get(k);
+        return result?.value ? { key: k, ...JSON.parse(result.value) } : null;
+      } catch { return null; }
+    }));
+    const candidates = results.filter(Boolean).filter(s => s.messages?.length > 0);
     candidates.sort((a, b) => new Date(b.savedAt || 0) - new Date(a.savedAt || 0));
     const found = candidates[0];
 
@@ -3830,7 +3873,7 @@ export default function App() {
     // Reconstruct a minimal session object from the saved data so ExerciseView can render
     // The full session config was saved inside the storage key name — we pass savedSession
     // directly through to ExerciseView via a special resume path
-    setSavedSession(prev => prev); // keep it; ExerciseView will read from localStorage by key
+    setSavedSession(prev => prev); // keep it; ExerciseView will read from persistent storage by key
     // We need to rebuild the session from the storage key and stored scenario info.
     // Since we only have metadata in the key, we match against SCENARIOS + INDUSTRY_PLAYBOOKS.
     const keyParts = savedSession.key.replace("tactician:", "").split(":");
@@ -3876,35 +3919,35 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: "instant" });
   };
 
-  const handleStart = (s) => {
+  const handleStart = async (s) => {
     // A new exercise is genuinely launching now — this is the point of no return for any
     // previously declined/abandoned session, so clean up every other saved session key.
     // (Declining the resume prompt via "Start New Exercise" intentionally does NOT do this
     // — that session stays resumable until an exercise is actually launched.)
-    clearOtherSessions(storageKey(s));
+    await clearOtherSessions(storageKey(s));
     setSession(s);
     setElapsedSec(0);
     setScreen("exercise");
     window.scrollTo({ top: 0, behavior: "instant" });
   };
 
-  const handleEnd = (messages, timeline) => {
+  const handleEnd = async (messages, timeline) => {
     // elapsedSec is kept live by ExerciseView's onElapsedChange callback (ticking once per
     // second, same value the Entire-Scenario time-limit feature uses), so it already
     // reflects the exercise's real active duration — no separate timestamp math needed here.
     const duration = Math.floor(elapsedSec);
     setExerciseData({ messages, timeline, duration });
-    setLastPlayed(lastPlayedStorage.load()); // refresh after exercise writes lastPlayed
+    setLastPlayed(await lastPlayedStorage.load()); // refresh after exercise writes lastPlayed
     setScreen("aar");
     window.scrollTo({ top: 0, behavior: "instant" });
   };
 
-  const handleNewScenario = () => {
+  const handleNewScenario = async () => {
     setSession(null);
     setSavedSession(null);
     setExerciseData({ messages: [], timeline: [], duration: 0 });
     setElapsedSec(0);
-    setLastPlayed(lastPlayedStorage.load());
+    setLastPlayed(await lastPlayedStorage.load());
     setScreen("setup");
     window.scrollTo({ top: 0, behavior: "instant" });
   };
