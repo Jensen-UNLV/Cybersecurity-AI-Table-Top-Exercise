@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, memo, forwardRef } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo, memo, forwardRef } from "react";
 
 // ── Data ──────────────────────────────────────────────────────
 const SCENARIOS = [
@@ -41,6 +41,16 @@ const COMPANY_SIZES = [
 ];
 
 const DEFAULT_COMPANY_PROFILE = { industry: "", companySize: "", additionalContext: "" };
+
+// Blended Incidents mode: when a session blends two scenarios together into one narrative,
+// the relationship between them is decided ONCE per session (like mysteryOpenerIndex) and
+// hidden from participants — the point of the mode is that the team has to figure out,
+// through their own investigation, whether the two threads are actually one coordinated
+// attack or just two unrelated incidents that happen to be colliding in time. Never surfaced
+// directly; only used to steer the facilitator's system prompt (see buildSystemPrompt).
+function pickBlendRelation() {
+  return Math.random() < 0.5 ? "coordinated" : "coincidental";
+}
 
 // Normalizes a possibly-stale saved companyProfile (e.g. sessions saved before this
 // feature existed) into the current shape, same pattern as normalizeFacilitatorConfig.
@@ -166,11 +176,15 @@ const DEFAULT_FACILITATOR = {
   phaseOverridesEnabled: false, // per-phase override list is off by default; overrides below only take effect when this is on
   phaseTimeOverrides: {},      // optional per-phase minute overrides, keyed by phase name
   maxScenarioMinutes: 60,      // whole-scenario time budget (only used when scope === "scenario")
+  showIncidentTags: false,    // Blended Incidents mode only — facilitator-controlled, togglable live mid-exercise;
+                               // when on, each message/inject is labeled with which underlying scenario thread it
+                               // belongs to. Off by default so the "figure it out yourselves" challenge is intact
+                               // unless the facilitator deliberately chooses to make threads visible.
 };
 
 // Maps the old "probing" field's values (gentle/balanced/aggressive) to the renamed
 // "complexity" field's values (narrow/standard/branching), for sessions saved to
-// persistent storage before this rename shipped.
+// localStorage before this rename shipped.
 const LEGACY_COMPLEXITY_MAP = { gentle: "narrow", balanced: "standard", aggressive: "branching" };
 
 // Normalizes a possibly-stale saved facilitatorConfig into the current shape: fills in
@@ -878,7 +892,7 @@ function Toggle({ checked, onChange, labelOn = "Enabled", labelOff = "Disabled" 
 }
 
 // ── Facilitator Settings ──────────────────────────────────────
-function FacilitatorSettings({ config, onChange, scenario, playbook, participants, mystery, companyProfile }) {
+function FacilitatorSettings({ config, onChange, scenario, secondaryScenario, blendRelation, mysterySlot, playbook, participants, mystery, companyProfile }) {
   const FOCUS_AREAS = ["Technical", "Legal / Compliance", "Communications", "Executive Decision-Making", "Vendor Management"];
   const toggle = (arr, val) => arr.includes(val) ? arr.filter(x => x !== val) : [...arr, val];
   const [showPrompt, setShowPrompt] = useState(false);
@@ -894,7 +908,10 @@ function FacilitatorSettings({ config, onChange, scenario, playbook, participant
     null,
     false,
     mystery,
-    companyProfile
+    companyProfile,
+    secondaryScenario,
+    blendRelation,
+    mysterySlot
   );
 
   const TONE_INFO = {
@@ -985,6 +1002,24 @@ function FacilitatorSettings({ config, onChange, scenario, playbook, participant
           ))}
         </div>
       </div>
+
+      {secondaryScenario && (
+        <>
+          <div className="settings-section-header">
+            Blended Incidents
+            <span className="settings-section-sub">This session blends {scenario?.name} + {secondaryScenario.name} into one feed</span>
+          </div>
+          <div className="settings-row">
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+              <div style={{ display: "flex", alignItems: "center" }}>
+                <div className="settings-label" style={{ marginBottom: 0 }}>SHOW INCIDENT TAGS</div>
+                <Tooltip><strong>Show Incident Tags</strong>Labels each facilitator message and inject with which underlying incident it belongs to. Off by default so the team has to work out the connection themselves — flip this on if you'd rather they focus purely on prioritization instead of also untangling which thread is which. Safe to toggle at any point, including mid-exercise.</Tooltip>
+              </div>
+              <Toggle checked={!!config.showIncidentTags} onChange={v => onChange({ ...config, showIncidentTags: v })} labelOn="Visible" labelOff="Hidden" />
+            </div>
+          </div>
+        </>
+      )}
 
       <div className="settings-section-header">
         Scenario Configuration
@@ -1239,7 +1274,7 @@ function FacilitatorSettings({ config, onChange, scenario, playbook, participant
 }
 
 // Build system prompt from facilitator config
-function buildSystemPrompt(config, scenario, playbook, phase, participants, turnNumber = 0, maxTurns = config.maxTurns, nextPhase = null, isLastPhase = false, mystery = false, companyProfile = DEFAULT_COMPANY_PROFILE) {
+function buildSystemPrompt(config, scenario, playbook, phase, participants, turnNumber = 0, maxTurns = config.maxTurns, nextPhase = null, isLastPhase = false, mystery = false, companyProfile = DEFAULT_COMPANY_PROFILE, secondaryScenario = null, blendRelation = null, mysterySlot = null) {
   const toneMap = {
     professional: "formal and authoritative",
     conversational: "warm and approachable",
@@ -1293,17 +1328,24 @@ function buildSystemPrompt(config, scenario, playbook, phase, participants, turn
     }
   }
 
-  const mysteryBlock = mystery
+  // mysteryBlock only ever applies to a genuinely solo Mystery Scenario session (no
+  // secondaryScenario). When blended, ALL masking — whether one slot is a Mystery pick, or
+  // both slots are simply known-but-root-cause-gated — is handled inside blendBlock instead,
+  // since that's the one place that can correctly reference "the other slot" without the
+  // awkward wording collision of two separate blocks each assuming they own the whole prompt.
+  const mysteryBlock = mystery && !secondaryScenario
     ? `\n\nMYSTERY SCENARIO: The team has NOT been told what type of incident this is — that's the point of the exercise. Never state, name, or directly hint at the scenario's category or title (e.g. do not say or imply "ransomware," "DDoS," "insider threat," "phishing," "business email compromise," "data exfiltration," "supply chain compromise," or the scenario's title "${scenario.name}") anywhere in your response, including the opening scene-setting message. The opening scene-setting message will be provided to you verbatim as a generic, category-agnostic business/user-facing symptom — reproduce it faithfully (light rewording for flow is fine) and do NOT layer in any technical indicator, mechanism, or category hint of your own on top of it. From the team's first action onward, describe only the technical symptoms, indicators, and consequences the team would actually observe, and let them diagnose the incident type themselves through their own investigation and playbook knowledge. If and only if the team correctly identifies the incident type through their own actions or reasoning, you may confirm it naturally as the scenario progresses — never volunteer it first.`
     : "";
 
-  // Complements mysteryBlock: for explicitly-selected (non-mystery) scenarios, the team
-  // already knows the incident CATEGORY (they picked it at setup), so hiding that would be
-  // pointless. Instead, gate the ROOT CAUSE / SOURCE — the specific technical mechanism,
-  // attacker infrastructure, exploited vulnerability, or insider identity — behind
+  // Complements mysteryBlock: for explicitly-selected (non-mystery, non-blended) scenarios,
+  // the team already knows the incident CATEGORY (they picked it at setup), so hiding that
+  // would be pointless. Instead, gate the ROOT CAUSE / SOURCE — the specific technical
+  // mechanism, attacker infrastructure, exploited vulnerability, or insider identity — behind
   // investigative actions, so the exercise still requires digging (log review, auth audits,
   // EDR/network tooling, vendor calls) rather than handing over the answer in the opening.
-  const rootCauseBlock = !mystery
+  // Blended sessions get the equivalent gating folded into blendBlock instead (see below),
+  // since it needs to speak about two scenarios rather than assume it owns the whole prompt.
+  const rootCauseBlock = !mystery && !secondaryScenario
     ? `\n\nROOT-CAUSE INVESTIGATION: The team knows this is being run as a "${scenario.name}" exercise, but they have NOT yet been given the specific technical root cause, attack source, or mechanism behind it. Do not volunteer specific technical indicators — attacker infrastructure, exploited vulnerability/CVE, compromised credentials, exact log entries, protocol/port details, data volumes, or an insider's identity — until the team takes a plausible investigative action that would surface that information (e.g. reviewing logs, auditing authentication history, engaging EDR/network tooling, contacting a vendor, pulling access records). Until they investigate, describe only observable symptoms and business impact — what non-technical staff or monitoring dashboards would notice. Once an action would plausibly reveal a specific technical detail, disclose it as a natural consequence of that action, not as a gift.`
     : "";
 
@@ -1312,6 +1354,28 @@ function buildSystemPrompt(config, scenario, playbook, phase, participants, turn
   const companyContext = companyProfile?.additionalContext?.trim();
   const companyBlock = (industry || sizeTier || companyContext)
     ? `\n\nCOMPANY PROFILE: Tailor scenario details — system names, dollar figures, headcounts, regulatory references, and organizational tone — to fit this organization rather than defaulting to generic examples.${industry ? ` Industry: ${industry.name} (relevant regulatory framework: ${industry.regulator}).` : ""}${sizeTier ? ` Size: ${sizeTier.name}.` : ""}${companyContext ? ` Additional context provided by the participants: ${companyContext}` : ""}`
+    : "";
+
+  // BLENDED INCIDENTS: two scenarios are woven into a single feed rather than run as
+  // separate tracks. `blendRelation` is decided once at launch and never told to the team —
+  // it only steers how you (the facilitator) are allowed to eventually treat a link between
+  // the two threads, IF the team's own investigation earns that reveal. `mysterySlot`
+  // ("A" | "B" | null) marks whichever thread, if any, is ALSO a Mystery pick — its category
+  // must stay fully hidden (not just its root cause) for the entire exercise, same standard
+  // as solo Mystery Scenario mode, layered on top of the ordinary blend-triage challenge.
+  const slotLine = (label, sc, slot) => mysterySlot === slot
+    ? `  • Incident ${label} — MYSTERY THREAD (hidden from the team, never reveal even the category): internally this is "${sc.name}" (${sc.description}), but the team must NEVER be told its category, title, or specific mechanism — do not say or imply "ransomware," "DDoS," "insider threat," "phishing," "business email compromise," "data exfiltration," "supply chain compromise," or its title. Describe only generic, category-agnostic business/user-facing symptoms for this thread (odd account behavior, scattered helpdesk tickets, unusual traffic — the same kind of vague reports regardless of which of the standard incident types it actually is). Let the team diagnose it, if at all, purely through their own investigation and reasoning; if they correctly guess it, you may confirm naturally, but never volunteer it first.`
+    : `  • Incident ${label} — "${sc.name}": ${sc.description}. The team selected this scenario themselves at setup, so its CATEGORY is fully known to them — reference it by name freely. Its specific technical root cause/mechanism (attacker infrastructure, exploited vulnerability, compromised credentials, exact log entries, an insider's identity, etc.) is still NOT yet known to them, though — withhold those details until a plausible investigative action would surface them (log review, auth audit, EDR/network tooling, vendor call, access records), same standard as a single-scenario ROOT-CAUSE INVESTIGATION exercise.`;
+  const blendBlock = secondaryScenario
+    ? `\n\nBLENDED INCIDENTS: This is a Blended Incidents exercise — TWO scenarios are unfolding at the same time and must be woven into ONE continuous narrative feed, not narrated as separate parallel tracks. The two threads are:
+${slotLine("A", scenario, "A")}
+${slotLine("B", secondaryScenario, "B")}
+- Interleave symptoms, injects, and developments from BOTH incidents into the same scene-setting narrative and the same responses over time — do not resolve one before introducing the other, and do not silo them into clearly separate paragraphs every time.
+- The team must do the work of triaging: deciding what to investigate first, what to deprioritize, and whether the two threads are actually connected. Never tell them outright which incident a given detail belongs to (that judgment call is the exercise) unless HINT MODE applies.
+- ${blendRelation === "coordinated"
+        ? `Ground truth (never reveal directly): the two incidents ARE part of one coordinated attack. If — and only if — the team's own investigative actions would plausibly surface a genuine technical link (shared infrastructure, a common compromised credential, overlapping timing that a log correlation would reveal, etc.), you may let that connection emerge as a natural consequence of their action. Never volunteer it first, and never make the connection more obvious than the specific evidence they've actually uncovered would justify.`
+        : `Ground truth (never reveal directly): the two incidents are NOT actually connected — any apparent overlap is coincidental. If the team pursues a theory that they're linked, do not confirm it; let their own investigation turn up evidence that gently undercuts the theory (e.g. a timeline that doesn't line up, unrelated infrastructure) rather than lecturing them that they're wrong. Do not manufacture a link just because they're looking for one.`}${mysterySlot ? ` This compounds with Incident ${mysterySlot}'s Mystery-thread masking above — the team won't even know both incidents' categories, let alone whether they're linked, so resist any urge to make the connection easier to spot just because one side is already a known scenario.` : ""}
+- THREAD TAGGING (required, technical/invisible to the team): begin every response — including the opening scene-setting message — with a single hidden tag on its own line, before any narrative text, in exactly this format: [THREAD:A] if the response's content belongs to Incident A only, [THREAD:B] if it belongs to Incident B only, or [THREAD:BOTH] if it touches both in the same response. This tag is stripped and used by the app to optionally label incidents for the facilitator — it must never be visible narrative text and must never be explained to the team.`
     : "";
 
   return `You are an expert cybersecurity tabletop exercise facilitator. Your role is to simulate a realistic incident and respond to the team's decisions — not to lead or prompt them.
@@ -1347,7 +1411,7 @@ MULTI-ROLE RESPONSES:
 
 Tone: ${toneMap[config.tone]}.
 Difficulty: ${diffMap[config.difficulty]}.
-Complexity: ${complexityMap[config.complexity]}.${focus}${custom}${turnBudget}${mysteryBlock}${rootCauseBlock}${companyBlock}`;
+Complexity: ${complexityMap[config.complexity]}.${focus}${custom}${turnBudget}${mysteryBlock}${rootCauseBlock}${companyBlock}${blendBlock}`;
 }
 
 // Format a set of simultaneous per-role responses into a single labeled block
@@ -1440,7 +1504,7 @@ function LandingPage({ onBegin }) {
 }
 
 // ── Reroll Modal ──────────────────────────────────────────────
-function RerollModal({ onKeepCurrent, onReroll }) {
+function RerollModal({ onKeepCurrent, onReroll, onRemove }) {
   const [rerolling, setRerolling] = useState(false);
   const [btnIcon, setBtnIcon] = useState("🎲");
 
@@ -1476,7 +1540,7 @@ function RerollModal({ onKeepCurrent, onReroll }) {
         </div>
         <div className="modal-actions">
           <button className="btn btn-primary" disabled={rerolling} onClick={onKeepCurrent}>
-            Keep Current &amp; Continue →
+            {onRemove ? "Keep Current" : "Keep Current & Continue →"}
           </button>
           <button
             className="btn"
@@ -1494,13 +1558,27 @@ function RerollModal({ onKeepCurrent, onReroll }) {
               : <><span style={{ fontSize: 16, lineHeight: 1 }}>🎲</span> Yes, Re-randomize</>}
           </button>
         </div>
+        {onRemove && (
+          <button
+            type="button"
+            disabled={rerolling}
+            onClick={onRemove}
+            style={{
+              marginTop: 10, background: "transparent", border: "none",
+              color: "#7a8ab5", fontSize: 12, textDecoration: "underline",
+              cursor: rerolling ? "default" : "pointer", opacity: rerolling ? 0.5 : 1,
+            }}
+          >
+            ✕ Remove from blend
+          </button>
+        )}
       </div>
     </div>
   );
 }
 
 // ── Randomizer Card ───────────────────────────────────────────
-function RandomizerCard({ onSelect, isSelected, onContinue }) {
+function RandomizerCard({ onSelect, isSelected, onContinue, blendMode, disabled, onRemove, excludeId }) {
   const [spinning, setSpinning] = useState(false);
   const [displayIcon, setDisplayIcon] = useState("🎲");
   const [confirmReroll, setConfirmReroll] = useState(false);
@@ -1531,6 +1609,14 @@ function RandomizerCard({ onSelect, isSelected, onContinue }) {
   // Clean up interval on unmount
   useEffect(() => () => clearInterval(intervalRef.current), []);
 
+  // Excludes whatever the OTHER blend pick already is (via `excludeId`, only relevant in
+  // blend mode) so Surprise Me can never silently roll the same scenario the team already
+  // picked explicitly for the other slot.
+  const rollPick = () => {
+    const pool = excludeId ? SCENARIOS.filter(s => s.id !== excludeId) : SCENARIOS;
+    return pool[Math.floor(Math.random() * pool.length)];
+  };
+
   const startSpin = (pick) => {
     setSpinning(true);
     let tick = 0;
@@ -1544,14 +1630,13 @@ function RandomizerCard({ onSelect, isSelected, onContinue }) {
   };
 
   const handleClick = () => {
-    if (spinning) return;
+    if (spinning || disabled) return;
     // If already selected, ask for confirmation before re-rolling
     if (isSelected) {
       setConfirmReroll(true);
       return;
     }
-    const pick = SCENARIOS[Math.floor(Math.random() * SCENARIOS.length)];
-    startSpin(pick);
+    startSpin(rollPick());
   };
 
 
@@ -1568,11 +1653,11 @@ function RandomizerCard({ onSelect, isSelected, onContinue }) {
             : isSelected
             ? "rgba(96,165,250,0.06)"
             : "rgba(29,78,216,0.03)",
-          cursor: spinning ? "default" : "pointer",
+          cursor: disabled ? "not-allowed" : spinning ? "default" : "pointer",
+          opacity: disabled ? 0.45 : 1,
           alignItems: "center",
           justifyContent: "center",
           textAlign: "center",
-          minHeight: 80,
           transition: "border-color 0.3s, background 0.3s",
         }}
       >
@@ -1591,12 +1676,16 @@ function RandomizerCard({ onSelect, isSelected, onContinue }) {
         </div>
         <div className="scenario-desc" style={{ marginTop: 6 }}>
           {spinning
-            ? "Your scenario is being selected — click Continue when ready…"
+            ? "Your scenario is being selected…"
             : isSelected
-            ? "A scenario has been secretly selected. Click Continue to proceed, or click here to pick a new random scenario."
+            ? blendMode
+              ? "A scenario has been secretly selected for this blend slot. Click here to re-roll it, or use the button below to remove it."
+              : "A scenario has been secretly selected. Click Continue to proceed, or click here to pick a new random scenario."
+            : blendMode
+            ? "Blend a hidden, category-unknown incident in with your other pick."
             : "Feeling bold? Let the platform secretly choose your scenario. The team won't know what they're facing until the exercise starts."}
         </div>
-        <div style={{ marginTop: 10 }}>
+        <div style={{ marginTop: 10, display: "flex", gap: 6, justifyContent: "center", flexWrap: "wrap" }}>
           <span className="tag" style={{
             background: isSelected && !spinning ? "rgba(96,165,250,0.15)" : "rgba(29,78,216,0.12)",
             color: isSelected && !spinning ? "#93c5fd" : "#60a5fa",
@@ -1604,8 +1693,17 @@ function RandomizerCard({ onSelect, isSelected, onContinue }) {
           }}>
             🎲 {isSelected && !spinning ? "Randomized" : "Random"}
           </span>
+          {isSelected && !spinning && blendMode && (
+            <span style={{
+              fontSize: 10, fontFamily: "'Share Tech Mono', monospace",
+              padding: "2px 7px", borderRadius: 3,
+              background: "rgba(167,139,250,0.15)", color: "#a78bfa",
+              border: "1px solid rgba(167,139,250,0.3)",
+            }}>🧬 In blend</span>
+          )}
         </div>
-        {/* Continue button — shown once a scenario is locked in (spinning or settled) */}
+        {/* Continue button — shown once a scenario is locked in (spinning or settled); absent
+            entirely in blend mode, since the shared 2-pick Continue bar handles that instead */}
         {(isSelected || spinning) && onContinue && (
           <button
             className="btn btn-primary"
@@ -1617,17 +1715,19 @@ function RandomizerCard({ onSelect, isSelected, onContinue }) {
         )}
       </div>
 
-      {/* Re-roll confirmation — bespoke modal with animated re-randomize button */}
+      {/* Re-roll confirmation — bespoke modal with animated re-randomize button; in blend
+          mode also offers a "Remove from blend" link so the pick can be cleared without
+          forcing a re-roll */}
       {confirmReroll && (
         <RerollModal
           onKeepCurrent={() => { setConfirmReroll(false); if (onContinue) onContinue(); }}
           onReroll={() => {
             setConfirmReroll(false);
             // Pick a new scenario silently — no card animation, navigate directly
-            const pick = SCENARIOS[Math.floor(Math.random() * SCENARIOS.length)];
-            onSelect(pick); // update parent state with new pick
+            onSelect(rollPick()); // update parent state with new pick
             if (onContinue) onContinue();
           }}
+          onRemove={blendMode && onRemove ? () => { setConfirmReroll(false); onRemove(); } : undefined}
         />
       )}
     </>
@@ -1638,8 +1738,21 @@ function RandomizerCard({ onSelect, isSelected, onContinue }) {
 function ParticipantSetup({ onStart, lastPlayed }) {
   const [step, setStep] = useState(0);
   const [usedRandomizer, setUsedRandomizer] = useState(false);
+  // Blended Incidents mode — an alternative to picking a single scenario. When active, the
+  // scenario grid becomes a multi-select (cap of 2): both picks get woven into one narrative
+  // rather than run as separate tracks. Surprise Me now lives INSIDE this same grid (see Step 0
+  // render) as its first tile, so it can be one of the two blend picks too — blending a known
+  // scenario with a Mystery (category-hidden) one. blendPicks is uniformly shaped as
+  // { id, isMystery, real: <SCENARIOS entry> } so regular and mystery picks can share the same
+  // toggle/finalize logic; `real` is always a concrete scenario (needed for prompt-building),
+  // `isMystery` just marks which slot must stay category-hidden from the team.
+  const [blendMode, setBlendMode] = useState(false);
+  const [blendPicks, setBlendPicks] = useState([]);
   const [selected, setSelected] = useState({
     scenario: null, playbook: null,
+    secondaryScenario: null, // set only when blendMode is used to launch
+    blendRelation: null,     // "coordinated" | "coincidental" — decided at launch, hidden from participants
+    mysterySlot: null,       // "A" | "B" | null — which blend slot (if any) is a Mystery pick
     participants: ROLES.map(role => ({ role, name: "", id: role, active: role === "Facilitator" })),
     sessionName: "",
     facilitatorConfig: { ...DEFAULT_FACILITATOR },
@@ -1651,9 +1764,80 @@ function ParticipantSetup({ onStart, lastPlayed }) {
     const date = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
     setUsedRandomizer(false); // manual pick clears randomizer flag
     setSelected(s => ({
-      ...s, scenario: sc,
+      ...s, scenario: sc, secondaryScenario: null, blendRelation: null, mysterySlot: null,
       sessionName: s.sessionName || `${sc.name} TTX — ${date}`,
     }));
+  };
+
+  // Commits blendPicks into `selected` once exactly 2 are chosen (or clears when < 2). Shared
+  // by the regular-card toggle and all three Surprise Me blend actions (add/reroll/remove)
+  // below, so the relation-roll and mysterySlot derivation only ever happen in one place.
+  const finalizeBlend = (picks) => {
+    if (picks.length === 2) {
+      const date = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+      const label = (p) => p.isMystery ? "Mystery Scenario" : p.real.name;
+      const mysterySlot = picks[0].isMystery ? "A" : picks[1].isMystery ? "B" : null;
+      setSelected(s => ({
+        ...s, scenario: picks[0].real, secondaryScenario: picks[1].real,
+        blendRelation: pickBlendRelation(), mysterySlot,
+        sessionName: s.sessionName || `${label(picks[0])} + ${label(picks[1])} TTX — ${date}`,
+      }));
+    } else {
+      setSelected(s => ({ ...s, scenario: null, secondaryScenario: null, blendRelation: null, mysterySlot: null }));
+    }
+  };
+
+  // Toggles a REGULAR scenario in/out of the blend-mode pick set (max 2). Once 2 are picked,
+  // the relationship between them (coordinated attack vs coincidental overlap) is rolled once
+  // via finalizeBlend — not re-rolled on every toggle — so flipping a pick back off and
+  // re-adding a third card doesn't quietly re-randomize the answer the team will be judged on.
+  const toggleBlendPick = (sc) => {
+    setBlendPicks(picks => {
+      const already = picks.find(p => p.id === sc.id);
+      const next = already ? picks.filter(p => p.id !== sc.id) : [...picks, { id: sc.id, isMystery: false, real: sc }].slice(0, 2);
+      finalizeBlend(next);
+      return next;
+    });
+  };
+
+  // Surprise Me's blend-mode actions. Kept separate from toggleBlendPick because the mystery
+  // slot needs its own random-scenario roll (excluding whatever the OTHER blend pick already
+  // is, so the two slots can never collide) and a reroll path, mirroring RandomizerCard's
+  // existing solo reroll flow one level up.
+  const addMysteryToBlend = () => {
+    setBlendPicks(picks => {
+      if (picks.length >= 2 || picks.some(p => p.isMystery)) return picks;
+      const excludeId = picks[0]?.id;
+      const pool = excludeId ? SCENARIOS.filter(s => s.id !== excludeId) : SCENARIOS;
+      const real = pool[Math.floor(Math.random() * pool.length)];
+      const next = [...picks, { id: "surprise-me", isMystery: true, real }].slice(0, 2);
+      finalizeBlend(next);
+      return next;
+    });
+  };
+  const rerollMysteryInBlend = () => {
+    setBlendPicks(picks => {
+      const other = picks.find(p => !p.isMystery);
+      const pool = other ? SCENARIOS.filter(s => s.id !== other.id) : SCENARIOS;
+      const real = pool[Math.floor(Math.random() * pool.length)];
+      const next = picks.map(p => p.isMystery ? { ...p, real } : p);
+      finalizeBlend(next);
+      return next;
+    });
+  };
+  const removeMysteryFromBlend = () => {
+    setBlendPicks(picks => {
+      const next = picks.filter(p => !p.isMystery);
+      finalizeBlend(next);
+      return next;
+    });
+  };
+  // Solo (non-blend) Surprise Me pick/reroll — same callback handles both, since
+  // RandomizerCard calls onSelect for the initial random pick AND for a confirmed reroll.
+  const selectMysterySolo = (pick) => {
+    const date = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+    setUsedRandomizer(true);
+    setSelected(s => ({ ...s, scenario: pick, secondaryScenario: null, blendRelation: null, mysterySlot: null, sessionName: s.sessionName || `TTX — ${date}` }));
   };
 
   const updateParticipant = (id, field, value) =>
@@ -1666,7 +1850,7 @@ function ParticipantSetup({ onStart, lastPlayed }) {
 
   // Compute synchronously — no hooks, no deferred evaluation
   const canProceed = (() => {
-    if (step === 0) return !!selected.scenario;
+    if (step === 0) return blendMode ? blendPicks.length === 2 : !!selected.scenario;
     if (step === 1) return !!selected.playbook;
     if (step === 2) return !!selected.companyProfile.industry && !!selected.companyProfile.companySize;
     if (step === 3) return activeParticipants.length > 0 && !!selected.sessionName.trim();
@@ -1700,40 +1884,91 @@ function ParticipantSetup({ onStart, lastPlayed }) {
             <div><div className="section-title">Choose a Scenario</div><div className="section-sub">Select the incident type your team will practice, or let the platform choose for you.</div></div>
           </div>
 
-          {/* Randomizer — full width, above the regular options */}
-          <div style={{ marginBottom: 20 }}>
-            <RandomizerCard
-              isSelected={usedRandomizer}
-              onSelect={(sc) => {
-                const date = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-                setUsedRandomizer(true);
-                setSelected(s => ({ ...s, scenario: sc, sessionName: s.sessionName || `TTX — ${date}` }));
-              }}
-              onContinue={() => { setStep(1); window.scrollTo({ top: 0, behavior: "instant" }); }}
-            />
+          {/* Blend Two Scenarios — increases difficulty by weaving two scenarios' symptoms and
+              injects into a single narrative instead of running one clean incident. Toggling
+              this switches the grid below from single-select to a 2-card multi-select. Sits
+              above the grid now that Surprise Me lives inside it (see below) rather than as
+              its own full-width zone with a divider separating it from "specific" scenarios. */}
+          <div
+            className={`scenario-card${blendMode ? " selected" : ""}`}
+            style={{ flexDirection: "row", alignItems: "center", gap: 16, marginBottom: 20, cursor: "pointer" }}
+            onClick={() => {
+              setBlendMode(b => !b);
+              setBlendPicks([]);
+              setUsedRandomizer(false);
+              setSelected(s => ({ ...s, scenario: null, secondaryScenario: null, blendRelation: null, mysterySlot: null }));
+            }}
+          >
+            <div style={{ fontSize: 24 }}>🧬</div>
+            <div style={{ flex: 1 }}>
+              <div className="scenario-name" style={{ marginBottom: 4 }}>Blend Two Scenarios</div>
+              <div style={{ fontSize: 12, color: "#4a6a8a" }}>Increases difficulty — two incidents' symptoms and injects surface together in one feed. Your team has to triage and figure out whether they're actually connected. Blend Surprise Me in too for an incident your team can't even identify the category of.</div>
+            </div>
+            <span className="tag" style={{
+              background: blendMode ? "rgba(167,139,250,0.15)" : "rgba(29,78,216,0.12)",
+              color: blendMode ? "#a78bfa" : "#60a5fa",
+              border: blendMode ? "1px solid rgba(167,139,250,0.3)" : "1px solid rgba(29,78,216,0.3)",
+            }}>{blendMode ? "✓ ON" : "OFF"}</span>
           </div>
 
-          {/* Divider */}
-          <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
-            <div style={{ flex: 1, height: 1, background: "#1a2a3a" }} />
-            <span style={{ fontSize: 11, color: "#2a4a6a", fontFamily: "'Share Tech Mono', monospace", letterSpacing: "0.08em", whiteSpace: "nowrap" }}>OR SELECT A SPECIFIC SCENARIO</span>
-            <div style={{ flex: 1, height: 1, background: "#1a2a3a" }} />
-          </div>
+          {blendMode && (
+            <div style={{ fontSize: 12, color: "#5a7a9a", marginBottom: 12, fontFamily: "'Share Tech Mono', monospace" }}>
+              SELECT {2 - blendPicks.length > 0 ? `${2 - blendPicks.length} MORE` : "COMPLETE"} SCENARIO{blendPicks.length === 1 ? "" : "S"} TO BLEND ({blendPicks.length}/2)
+            </div>
+          )}
 
-          {/* Regular scenario grid */}
+          {/* Unified scenario grid — Surprise Me is now the first tile, sized identically to
+              the six named scenarios (RandomizerCard already renders with the same
+              `.scenario-card` class/sizing; it just used to sit in its own full-width wrapper
+              above a divider). Single-select normally, up-to-2 multi-select in Blend mode. */}
           <div className="grid-3 gap-4" style={{ marginBottom: 24 }}>
+            <RandomizerCard
+              blendMode={blendMode}
+              isSelected={blendMode ? blendPicks.some(p => p.isMystery) : usedRandomizer}
+              disabled={blendMode && blendPicks.length >= 2 && !blendPicks.some(p => p.isMystery)}
+              onSelect={blendMode
+                ? (pick) => {
+                    setBlendPicks(picks => {
+                      const already = picks.some(p => p.isMystery);
+                      const next = already
+                        ? picks.map(p => p.isMystery ? { ...p, real: pick } : p)
+                        : [...picks, { id: "surprise-me", isMystery: true, real: pick }].slice(0, 2);
+                      finalizeBlend(next);
+                      return next;
+                    });
+                  }
+                : selectMysterySolo}
+              onRemove={blendMode ? removeMysteryFromBlend : undefined}
+              excludeId={blendMode ? blendPicks.find(p => !p.isMystery)?.id : undefined}
+              onContinue={blendMode ? undefined : () => { setStep(1); window.scrollTo({ top: 0, behavior: "instant" }); }}
+            />
             {SCENARIOS.map(sc => {
-              const isActive = selected.scenario?.id === sc.id && !usedRandomizer;
+              const isActive = blendMode
+                ? blendPicks.some(p => p.id === sc.id)
+                : selected.scenario?.id === sc.id && !usedRandomizer;
+              const blendFull = blendMode && blendPicks.length >= 2 && !isActive;
               return (
                 <div key={sc.id}
                   className={`scenario-card${isActive ? " selected" : ""}`}
-                  onClick={() => !isActive && selectScenario(sc)}
-                  style={{ cursor: isActive ? "default" : "pointer" }}
+                  onClick={() => {
+                    if (blendMode) { if (!blendFull) toggleBlendPick(sc); return; }
+                    if (!isActive) selectScenario(sc);
+                  }}
+                  style={{ cursor: blendFull ? "not-allowed" : (isActive && !blendMode) ? "default" : "pointer", opacity: blendFull ? 0.45 : 1 }}
                 >
                   <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
                     <span className="scenario-icon">{sc.icon}</span>
                     <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 5 }}>
                       <span className={`badge badge-severity-${sc.severity}`}>{sc.severity}</span>
+                      {isActive && blendMode && (
+                        <span style={{
+                          fontSize: 10, fontFamily: "'Share Tech Mono', monospace",
+                          padding: "2px 7px", borderRadius: 3,
+                          background: "rgba(167,139,250,0.15)", color: "#a78bfa",
+                          border: "1px solid rgba(167,139,250,0.3)",
+                          whiteSpace: "nowrap",
+                        }}>🧬 In blend</span>
+                      )}
                       {lastPlayed?.scenarioId === sc.id && (
                         <span style={{
                           fontSize: 10, fontFamily: "'Share Tech Mono', monospace",
@@ -1754,8 +1989,9 @@ function ParticipantSetup({ onStart, lastPlayed }) {
                     </div>
                   )}
                   <div className="scenario-tags">{sc.tags.map(t => <span key={t} className="tag">{t}</span>)}</div>
-                  {/* Continue button appears on selected card */}
-                  {isActive && (
+                  {/* Continue button appears on selected card in single-select mode only —
+                      blend mode uses the shared bar below since it needs 2 cards confirmed */}
+                  {isActive && !blendMode && (
                     <button
                       className="btn btn-primary"
                       style={{ marginTop: 12, width: "100%" }}
@@ -1768,6 +2004,21 @@ function ParticipantSetup({ onStart, lastPlayed }) {
               );
             })}
           </div>
+
+          {/* Shared Continue bar for Blend mode, once both picks are made. Masks the mystery
+              pick's icon/name if one of the two slots is Surprise Me — this bar is still part
+              of setup, so it must not leak the identity any earlier than the exercise itself
+              would (which stays hidden all the way through, per the Blended Incidents mystery
+              masking in buildSystemPrompt/Scenario Brief/chat header). */}
+          {blendMode && blendPicks.length === 2 && (
+            <button
+              className="btn btn-primary"
+              style={{ width: "100%", marginBottom: 24 }}
+              onClick={() => { setStep(1); window.scrollTo({ top: 0, behavior: "instant" }); }}
+            >
+              Continue with {blendPicks[0].isMystery ? "🎲 Mystery Scenario" : `${blendPicks[0].real.icon} ${blendPicks[0].real.name}`} + {blendPicks[1].isMystery ? "🎲 Mystery Scenario" : `${blendPicks[1].real.icon} ${blendPicks[1].real.name}`} →
+            </button>
+          )}
         </>
       )}
 
@@ -1875,11 +2126,23 @@ function ParticipantSetup({ onStart, lastPlayed }) {
                 <div style={{ flex: 1 }}>
                   <label>Scenario</label>
                   <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 12px", background: "#070d18", borderRadius: 6, border: "1px solid #1a2a3a", height: 38 }}>
-                    {usedRandomizer ? (
+                    {selected.mysterySlot && selected.secondaryScenario ? (
+                      <>
+                        <span style={{ fontSize: 16 }}>{selected.mysterySlot === "A" ? "🎲" : selected.scenario?.icon}{selected.mysterySlot === "B" ? "🎲" : selected.secondaryScenario?.icon}</span>
+                        <span style={{ fontSize: 13, color: "#c9d4e0", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{selected.mysterySlot === "A" ? "Mystery Scenario" : selected.scenario?.name} + {selected.mysterySlot === "B" ? "Mystery Scenario" : selected.secondaryScenario?.name}</span>
+                        <span className="tag" style={{ flexShrink: 0, background: "rgba(167,139,250,0.15)", color: "#a78bfa", border: "1px solid rgba(167,139,250,0.3)" }}>🧬 Blended · 🎲 Mystery</span>
+                      </>
+                    ) : usedRandomizer ? (
                       <>
                         <span style={{ fontSize: 16 }}>🎲</span>
                         <span style={{ fontSize: 13, color: "#c9d4e0", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>Mystery Scenario</span>
                         <span className="tag" style={{ flexShrink: 0, background: "rgba(124,58,237,0.15)", color: "#a78bfa", border: "1px solid rgba(124,58,237,0.3)" }}>Randomized</span>
+                      </>
+                    ) : selected.secondaryScenario ? (
+                      <>
+                        <span style={{ fontSize: 16 }}>{selected.scenario?.icon}{selected.secondaryScenario?.icon}</span>
+                        <span style={{ fontSize: 13, color: "#c9d4e0", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{selected.scenario?.name} + {selected.secondaryScenario?.name}</span>
+                        <span className="tag" style={{ flexShrink: 0, background: "rgba(167,139,250,0.15)", color: "#a78bfa", border: "1px solid rgba(167,139,250,0.3)" }}>🧬 Blended</span>
                       </>
                     ) : (
                       <>
@@ -1980,9 +2243,12 @@ function ParticipantSetup({ onStart, lastPlayed }) {
                 config={selected.facilitatorConfig}
                 onChange={fc => setSelected(s => ({ ...s, facilitatorConfig: fc }))}
                 scenario={selected.scenario}
+                secondaryScenario={selected.secondaryScenario}
+                blendRelation={selected.blendRelation}
+                mysterySlot={selected.mysterySlot}
                 playbook={selected.playbook}
                 participants={selected.participants.filter(p => p.active)}
-                mystery={usedRandomizer}
+                mystery={usedRandomizer && !selected.secondaryScenario}
                 companyProfile={selected.companyProfile}
               />
               <hr className="divider" />
@@ -2016,14 +2282,21 @@ function ParticipantSetup({ onStart, lastPlayed }) {
               className="btn btn-primary"
               disabled={!canProceed}
               style={!canProceed ? { opacity: 0.4, pointerEvents: "none" } : {}}
-            onClick={() => onStart({
-              ...selected,
-              participants: activeParticipants,
-              usedRandomizer,
-              // Seed once at launch so the same generic opener is used consistently across
-              // resumes of this session, rather than re-randomizing on every reload.
-              mysteryOpenerIndex: usedRandomizer ? Math.floor(Math.random() * MYSTERY_OPENERS.length) : undefined,
-            })}>
+            onClick={() => {
+              // `usedRandomizer` (local state) only tracks the SOLO Surprise Me path;
+              // `selected.mysterySlot` tracks a Mystery pick used as one of two blend slots.
+              // Either one means there's a hidden thread somewhere in this session, which is
+              // what session.usedRandomizer / mysteryOpenerIndex actually need to reflect.
+              const hasMysteryThread = usedRandomizer || !!selected.mysterySlot;
+              onStart({
+                ...selected,
+                participants: activeParticipants,
+                usedRandomizer: hasMysteryThread,
+                // Seed once at launch so the same generic opener is used consistently across
+                // resumes of this session, rather than re-randomizing on every reload.
+                mysteryOpenerIndex: hasMysteryThread ? Math.floor(Math.random() * MYSTERY_OPENERS.length) : undefined,
+              });
+            }}>
             Launch Exercise →
           </button>}
       </div>
@@ -2085,7 +2358,16 @@ function parseOptions(text) {
 function stripOptions(text) {
   return text
     .replace(/\[OPTION_[A-D]\].+/g, "")
-    .replace(/^[A-D][.):\s]\s*.{10,}/gm, "")  // catches "A. ...", "A: ...", "A) ..."
+    // Catches stray "A. ...", "A: ...", "A) ..." multiple-choice-style lines the model
+    // sometimes writes without the [OPTION_X] bracket format. FIXED regression: the
+    // delimiter class used to include a bare `\s`, so any ordinary sentence starting with
+    // the word "A " (the indefinite article — extremely common in prose, e.g. "A wave of
+    // complaints...", "A separate incident...") was being deleted as if it were "option A."
+    // Blended Incident openings surfaced this far more than single-scenario ones because
+    // they're more likely to open a sentence that way. Real MC-style lines always use actual
+    // punctuation after the letter, so the fix requires one of . ) : rather than any
+    // whitespace, and requires at least one space before the option text.
+    .replace(/^[A-D][.):]\s+.{10,}/gm, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
@@ -2094,6 +2376,17 @@ function stripOptions(text) {
 // longer instructed to emit it (the in-chat advance button was removed; only the app-driven
 // turn-limit auto-advance and the manual "Next Phase" button now change phases).
 function stripAdvancePhase(text) { return text.replace(/\[ADVANCE_PHASE\]/gi, "").replace(/\n{3,}/g, "\n\n").trim(); }
+
+// Blended Incidents mode only: the facilitator prompt asks every response to open with a
+// hidden [THREAD:A] / [THREAD:B] / [THREAD:BOTH] marker identifying which underlying
+// scenario the content belongs to. parseThreadTag reads it for optional display (see
+// ChatMessage's incident-tag chip); stripThreadTag removes it before the text is ever shown,
+// same pattern as stripOptions/stripAdvancePhase above — it must never leak as visible text.
+function parseThreadTag(text) {
+  const m = /^\s*\[THREAD:(A|B|BOTH)\]/i.exec(text || "");
+  return m ? m[1].toUpperCase() : null;
+}
+function stripThreadTag(text) { return (text || "").replace(/^\s*\[THREAD:(A|B|BOTH)\]/i, "").replace(/^\n+/, "").trim(); }
 
 // ── Multi-Role Response Round ─────────────────────────────────
 function MultiRoleInputPanel({ participants, onSubmit, onCancel, loading }) {
@@ -2168,11 +2461,21 @@ const MultiRoleMessageGroup = memo(function MultiRoleMessageGroup({ msg }) {
 // a well-known source of intermittent selection loss in React apps using
 // dangerouslySetInnerHTML — memoizing here removes that churn entirely for messages whose
 // content hasn't actually changed.
-const ChatMessage = memo(forwardRef(function ChatMessage({ msg }, ref) {
-  // Strip [OPTION_X] and [ADVANCE_PHASE] markers from every AI message
+// `incidentTags` (Blended Incidents mode only) carries { showIncidentTags, primary, secondary }
+// so this component can render a small "which incident" chip without needing the whole
+// session object — undefined/null in every non-blended session, in which case nothing here
+// changes from before.
+const ChatMessage = memo(forwardRef(function ChatMessage({ msg, incidentTags }, ref) {
+  const threadTag = msg.role === "ai" ? parseThreadTag(msg.text) : null;
+  // Strip [OPTION_X], [ADVANCE_PHASE], and [THREAD:X] markers from every AI message
   const displayText = msg.role === "ai"
-    ? stripAdvancePhase(stripOptions(msg.text))
+    ? stripThreadTag(stripAdvancePhase(stripOptions(msg.text)))
     : msg.text;
+  const tagInfo = (incidentTags?.showIncidentTags && threadTag)
+    ? threadTag === "A" ? (incidentTags.mysterySlot === "A" ? { icon: "🎲", name: "Mystery" } : { icon: incidentTags.primary?.icon, name: incidentTags.primary?.name })
+      : threadTag === "B" ? (incidentTags.mysterySlot === "B" ? { icon: "🎲", name: "Mystery" } : { icon: incidentTags.secondary?.icon, name: incidentTags.secondary?.name })
+      : { icon: "🧬", name: "Both incidents" }
+    : null;
   return (
     <div className="chat-msg" ref={ref}>
       <div className={`chat-avatar${msg.role === "ai" ? " ai" : ""}`}>
@@ -2183,6 +2486,11 @@ const ChatMessage = memo(forwardRef(function ChatMessage({ msg }, ref) {
           <span>{msg.role === "ai" ? "AI Facilitator" : msg.author}</span>
           <span style={{ opacity: 0.5 }}>·</span>
           <span>{msg.time}</span>
+          {tagInfo && (
+            <span className="tag" style={{ background: "rgba(167,139,250,0.15)", color: "#a78bfa", border: "1px solid rgba(167,139,250,0.3)" }}>
+              {tagInfo.icon} {tagInfo.name}
+            </span>
+          )}
           {msg.role === "ai" && <VoiceButton text={displayText} />}
         </div>
         <div className={`chat-text${msg.role === "ai" ? " ai-msg" : ""}`}
@@ -2192,7 +2500,27 @@ const ChatMessage = memo(forwardRef(function ChatMessage({ msg }, ref) {
   );
 }));
 
-function AIChat({ scenario, phase, messages, onMessage, loading, participants, multiMode, onToggleMultiMode, onMultiSend, hideScenarioName, exerciseConcluded, onCompleteExercise }) {
+function AIChat({ scenario, secondaryScenario, mysterySlot, showIncidentTags, phase, messages, onMessage, loading, participants, multiMode, onToggleMultiMode, onMultiSend, hideScenarioName, exerciseConcluded, onCompleteExercise }) {
+  // FIXED regression: this object literal was being recreated on every AIChat render (e.g.
+  // every second, from ExerciseView's phase/scenario countdown tick) and passed straight into
+  // memo()-wrapped ChatMessage as a prop. A fresh object reference every render defeats
+  // React.memo's shallow comparison, forcing every chat bubble to reconcile from scratch on
+  // every tick — reintroducing the exact text-selection flicker bug the ChatMessage/
+  // MultiRoleMessageGroup memoization was originally added to fix (see TEST_CHECKLIST.md §9).
+  // useMemo keeps the same object reference across renders whenever these specific values
+  // haven't actually changed.
+  const incidentTags = useMemo(
+    () => secondaryScenario ? { showIncidentTags, primary: scenario, secondary: secondaryScenario, mysterySlot } : null,
+    [secondaryScenario, showIncidentTags, scenario, mysterySlot]
+  );
+  // Header label: full mask for solo Mystery Scenario (hideScenarioName); for Blended
+  // Incidents, mask only whichever slot is the Mystery pick (if any) and show the other
+  // scenario's real name normally, rather than an all-or-nothing MYSTERY SCENARIO label.
+  const headerLabel = hideScenarioName
+    ? "MYSTERY SCENARIO"
+    : secondaryScenario
+    ? `${mysterySlot === "A" ? "MYSTERY" : scenario?.name?.toUpperCase()} + ${mysterySlot === "B" ? "MYSTERY" : secondaryScenario?.name?.toUpperCase()}`
+    : scenario?.name?.toUpperCase();
   const [input, setInput] = useState("");
   const [optionsRequested, setOptionsRequested] = useState(false);
   const [selectedOption, setSelectedOption] = useState(null);
@@ -2273,7 +2601,7 @@ function AIChat({ scenario, phase, messages, onMessage, loading, participants, m
   return (
     <div className="card" style={{ display: "flex", flexDirection: "column" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-        <div className="card-title" style={{ marginBottom: 0 }}>AI FACILITATOR{hideScenarioName ? " · MYSTERY SCENARIO" : ` · ${scenario?.name?.toUpperCase()}`}</div>
+        <div className="card-title" style={{ marginBottom: 0 }}>AI FACILITATOR · {headerLabel}</div>
         {participants?.length > 1 && !showOptions && !exerciseConcluded && (
           <button
             className={`btn btn-sm ${multiMode ? "btn-active" : "btn-ghost"}`}
@@ -2288,7 +2616,7 @@ function AIChat({ scenario, phase, messages, onMessage, loading, participants, m
           if (m.multi) {
             return <MultiRoleMessageGroup key={i} msg={m} />;
           }
-          return <ChatMessage key={i} msg={m} ref={isThisLastAI ? lastAiMsgRef : null} />;
+          return <ChatMessage key={i} msg={m} incidentTags={incidentTags} ref={isThisLastAI ? lastAiMsgRef : null} />;
         })}
         {loading && (
           <div className="chat-msg" ref={lastAiMsgRef}>
@@ -2404,8 +2732,18 @@ function AIChat({ scenario, phase, messages, onMessage, loading, participants, m
 }
 
 // ── Injects ───────────────────────────────────────────────────
-function InjectPanel({ scenario, onInject, companyProfile }) {
-  const injects = (INJECT_LIBRARY[scenario?.id] || []).map(inj => interpolateInject(inj, companyProfile));
+function InjectPanel({ scenario, secondaryScenario, mysterySlot, showIncidentTags, onInject, companyProfile }) {
+  // In Blended Incidents mode, pool BOTH scenarios' injects into one panel — each card
+  // carries its source scenario so a tag can be shown (or withheld) per the facilitator's
+  // Show Incident Tags preference, same gate the chat's thread chips use. If one slot is a
+  // Mystery pick, its tag is masked to "🎲 Mystery" (never the real scenario name) even when
+  // Show Incident Tags is on — the inject's own title/text still shows normally, matching the
+  // existing precedent that this tab is a facilitator tool, not participant-visible narration.
+  const primaryInjects = (INJECT_LIBRARY[scenario?.id] || []).map(inj => ({ ...interpolateInject(inj, companyProfile), source: scenario, sourceSlot: "A" }));
+  const secondaryInjects = secondaryScenario
+    ? (INJECT_LIBRARY[secondaryScenario.id] || []).map(inj => ({ ...interpolateInject(inj, companyProfile), source: secondaryScenario, sourceSlot: "B" }))
+    : [];
+  const injects = [...primaryInjects, ...secondaryInjects];
   const investigative = injects.filter(inj => inj.tier !== "confirmation");
   const confirmation = injects.filter(inj => inj.tier === "confirmation");
   const renderGroup = (label, hint, list) => list.length === 0 ? null : (
@@ -2415,7 +2753,14 @@ function InjectPanel({ scenario, onInject, companyProfile }) {
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         {list.map((inj, i) => (
           <div key={i} className="inject-item" style={{ borderLeft: `3px solid ${inj.color}` }}>
-            <div className="inject-title"><span className="inject-badge" style={{ background: inj.color }} />{inj.title}</div>
+            <div className="inject-title" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <span><span className="inject-badge" style={{ background: inj.color }} />{inj.title}</span>
+              {secondaryScenario && showIncidentTags && (
+                <span className="tag" style={{ background: "rgba(167,139,250,0.15)", color: "#a78bfa", border: "1px solid rgba(167,139,250,0.3)" }}>
+                  {inj.sourceSlot === mysterySlot ? "🎲 Mystery" : `${inj.source.icon} ${inj.source.name}`}
+                </span>
+              )}
+            </div>
             <div className="inject-text">{inj.text}</div>
             <div style={{ marginTop: 10 }}>
               <button className="btn btn-ghost btn-sm" onClick={() => onInject(inj)}>⚡ Inject into Exercise</button>
@@ -2476,6 +2821,9 @@ function AARView({ session, timeline, messages, duration, onNewScenario }) {
           ? m.authors.map(a => `${a.name || a.role} (${a.role}): ${a.text}`).join("\n")
           : `${m.author || m.role}: ${m.text}`
       ).join("\n");
+      const blendContext = session.secondaryScenario
+        ? `\n\nBLENDED INCIDENTS: This session blended two scenarios into one feed — "${session.scenario.name}" and "${session.secondaryScenario.name}". The ACTUAL ground truth, which participants were never told directly during the exercise, is that the two incidents were ${session.blendRelation === "coordinated" ? "part of ONE coordinated attack" : "NOT actually connected — any apparent overlap was coincidental"}. Now that the exercise is over, reveal this plainly in a new "blendReveal" field, and assess how well the team recognized (or was misled by) the relationship between the two threads, and how well they prioritized/triaged across both.`
+        : "";
       const resp = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -2483,12 +2831,12 @@ function AARView({ session, timeline, messages, duration, onNewScenario }) {
           system: `You are a cybersecurity tabletop exercise facilitator writing a professional After-Action Report. Respond ONLY with a single valid JSON object — no markdown code fences, no commentary before or after, no trailing text. The entire response must be parseable by JSON.parse().`,
           messages: [{ role: "user", content: `Generate an AAR for this tabletop exercise.
 
-Scenario: ${session.scenario.name}
+Scenario: ${scenarioLabel(session)}
 Playbook: ${session.playbook.name}
 Duration: ${fmt(duration)}
 Participants: ${session.participants.map(p => `${p.name || p.role} (${p.role})`).join(", ")}
 Facilitator tone: ${session.facilitatorConfig.tone}, difficulty: ${session.facilitatorConfig.difficulty}
-Discussion log: ${log || "(No discussion captured — generate a realistic template AAR.)"}
+Discussion log: ${log || "(No discussion captured — generate a realistic template AAR.)"}${blendContext}
 
 Return this exact JSON shape with no other text:
 {
@@ -2501,7 +2849,8 @@ Return this exact JSON shape with no other text:
     {"id": 2, "action": "specific action", "owner": "Role Title", "priority": "Medium"},
     {"id": 3, "action": "specific action", "owner": "Role Title", "priority": "Low"}
   ],
-  "nextSteps": ["specific step", "specific step", "specific step"]
+  "nextSteps": ["specific step", "specific step", "specific step"]${session.secondaryScenario ? `,
+  "blendReveal": {"relation": "${session.blendRelation}", "explanation": "2-3 sentence plain-language reveal of how the two incidents were/weren't connected, and how well the team's own investigation tracked with reality"}` : ""}
 }` }]
         })
       });
@@ -2563,7 +2912,7 @@ Return this exact JSON shape with no other text:
 <html lang="en">
 <head>
   <meta charset="UTF-8"/>
-  <title>AAR — ${session.scenario.name}</title>
+  <title>AAR — ${scenarioLabel(session)}</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -2604,7 +2953,7 @@ Return this exact JSON shape with no other text:
     <button onclick="window.print()" style="background:#fff;color:#1e40af;border:none;padding:6pt 16pt;border-radius:4pt;font-size:10pt;font-weight:600;cursor:pointer;">🖨 Print / Save as PDF</button>
   </div>
   <h1>After-Action Report</h1>
-  <div class="sub">${session.scenario.icon} ${session.scenario.name} &nbsp;·&nbsp; ${session.playbook.name} &nbsp;·&nbsp; ${session.sessionName}</div>
+  <div class="sub">${scenarioIcons(session)} ${scenarioLabel(session)} &nbsp;·&nbsp; ${session.playbook.name} &nbsp;·&nbsp; ${session.sessionName}</div>
 
   <div class="metrics">
     <div class="metric"><div class="metric-value">${session.participants.length}</div><div class="metric-label">Participants</div></div>
@@ -2621,6 +2970,12 @@ Return this exact JSON shape with no other text:
     <div class="section-title">Executive Summary</div>
     <div class="summary">${aarData?.executiveSummary || ""}</div>
   </div>
+
+  ${aarData?.blendReveal ? `
+  <div class="section" style="border-color:#c4b5fd;background:#faf5ff;">
+    <div class="section-title" style="color:#7c3aed;">🧬 Blend Reveal — ${aarData.blendReveal.relation === "coordinated" ? "Coordinated Attack" : "Coincidental Overlap"}</div>
+    <div class="summary">${aarData.blendReveal.explanation || ""}</div>
+  </div>` : ""}
 
   <div class="two-col">
     <div class="section">
@@ -2692,7 +3047,7 @@ Return this exact JSON shape with no other text:
               After-Action Report
             </div>
             <div className="aar-header-sub" style={{ fontSize: 13, color: "#4a6a8a" }}>
-              {session.scenario.icon} {session.scenario.name} &nbsp;·&nbsp; {session.playbook.name} &nbsp;·&nbsp; {session.sessionName}
+              {scenarioIcons(session)} {scenarioLabel(session)} &nbsp;·&nbsp; {session.playbook.name} &nbsp;·&nbsp; {session.sessionName}
             </div>
           </div>
           <div className="no-print" style={{ display: "flex", gap: 8, flexShrink: 0 }}>
@@ -2808,6 +3163,20 @@ Return this exact JSON shape with no other text:
                 {aarData.executiveSummary}
               </div>
             </div>
+
+            {/* Blend Reveal — Blended Incidents sessions only. This is the moment the
+                coordinated-vs-coincidental ground truth (never told to the team mid-exercise)
+                finally gets surfaced, alongside how well their own investigation tracked it. */}
+            {aarData.blendReveal && (
+              <div className="aar-card card" style={{ border: "1px solid rgba(167,139,250,0.35)", background: "rgba(124,58,237,0.06)" }}>
+                <div className="aar-card-title card-title" style={{ color: "#a78bfa" }}>
+                  🧬 BLEND REVEAL — {aarData.blendReveal.relation === "coordinated" ? "COORDINATED ATTACK" : "COINCIDENTAL OVERLAP"}
+                </div>
+                <div style={{ fontSize: 14, color: "#c0d4ea", lineHeight: 1.8 }}>
+                  {aarData.blendReveal.explanation}
+                </div>
+              </div>
+            )}
 
             {/* What Went Well + Areas for Improvement side by side */}
             <div className="grid-2 gap-4">
@@ -2993,27 +3362,38 @@ const getInjectClosing = (color) => {
     : INJECT_CLOSINGS.medium;
   return pool[Math.floor(Math.random() * pool.length)];
 };
+// Human-facing scenario label — combines primary + secondary scenario name/icon when a
+// session is Blended, otherwise just returns the single scenario's own name/icon. Used
+// anywhere the UI displays "the scenario" to a person (AAR header, exercise header, print
+// view) so blended sessions don't silently show only half the incident.
+const scenarioLabel = (session) => session.secondaryScenario
+  ? `${session.scenario.name} + ${session.secondaryScenario.name}`
+  : session.scenario.name;
+const scenarioIcons = (session) => session.secondaryScenario
+  ? `${session.scenario.icon}${session.secondaryScenario.icon}`
+  : session.scenario.icon;
+
 const storageKey = (session) =>
-  `tactician:${session.sessionName}:${session.scenario.id}`.replace(/\s+/g, "_").replace(/['"]/g, "").slice(0, 120);
+  `tactician:${session.sessionName}:${session.scenario.id}${session.secondaryScenario ? `+${session.secondaryScenario.id}` : ""}`.replace(/\s+/g, "_").slice(0, 120);
 
 // Remove every other saved-in-progress session key, keeping only (optionally) the one
 // belonging to a just-launched session. Called at the moment a new exercise actually
 // launches — not when a resume prompt is merely declined — so a declined/abandoned
 // session remains resumable until the person commits to a genuinely new exercise.
-const clearOtherSessions = async (keepKey = null) => {
+const clearOtherSessions = (keepKey = null) => {
   try {
-    const { keys } = (await window.storage.list("tactician:")) || { keys: [] };
-    const toDelete = keys.filter(k => k !== LAST_PLAYED_KEY && k !== keepKey);
-    await Promise.all(toDelete.map(k => window.storage.delete(k)));
+    Object.keys(localStorage)
+      .filter(k => k.startsWith("tactician:") && k !== LAST_PLAYED_KEY && k !== keepKey)
+      .forEach(k => localStorage.removeItem(k));
   } catch { /* silent */ }
 };
 
 const LAST_PLAYED_KEY = "tactician:lastPlayed";
 
 const lastPlayedStorage = {
-  async save(scenario, playbook, sessionName) {
+  save(scenario, playbook, sessionName) {
     try {
-      await window.storage.set(LAST_PLAYED_KEY, JSON.stringify({
+      localStorage.setItem(LAST_PLAYED_KEY, JSON.stringify({
         scenarioId: scenario.id,
         scenarioName: scenario.name,
         scenarioIcon: scenario.icon,
@@ -3024,23 +3404,23 @@ const lastPlayedStorage = {
       }));
     } catch { /* silent */ }
   },
-  async load() {
+  load() {
     try {
-      const result = await window.storage.get(LAST_PLAYED_KEY);
-      return result?.value ? JSON.parse(result.value) : null;
+      const raw = localStorage.getItem(LAST_PLAYED_KEY);
+      return raw ? JSON.parse(raw) : null;
     } catch { return null; }
   },
 };
 
-// ── Persistent chat storage hook (window.storage) ────────────
+// ── localStorage chat persistence hook ───────────────────────
 function useChatStorage(session) {
   const key = storageKey(session);
 
-  const load = async () => {
+  const load = () => {
     try {
-      const result = await window.storage.get(key);
-      if (!result?.value) return null;
-      return JSON.parse(result.value); // { messages, timeline, phaseIdx, turnsInPhase, savedAt }
+      const raw = localStorage.getItem(key);
+      if (!raw) return null;
+      return JSON.parse(raw); // { messages, timeline, phaseIdx, turnsInPhase, savedAt }
     } catch { return null; }
   };
 
@@ -3060,30 +3440,48 @@ function useChatStorage(session) {
   // timestamps) are now plain durations — the exact remaining/elapsed seconds at save time —
   // rather than a wall-clock start point to do math against on resume. This is what makes
   // resuming freeze the clock while away instead of continuing to drain it in the background.
-  const save = async (messages, timeline, phaseIdx, session, turnsInPhase, phaseRemainingSec, scenarioElapsedSec, liveFacilitatorConfig) => {
-    const payload = {
-      messages, timeline, phaseIdx, turnsInPhase, phaseRemainingSec, scenarioElapsedSec,
-      // Persist enough session metadata to reconstruct on resume
-      sessionName: session?.sessionName,
-      playbook: session?.playbook,
-      participants: session?.participants,
-      facilitatorConfig: liveFacilitatorConfig || session?.facilitatorConfig,
-      companyProfile: session?.companyProfile,
-      usedRandomizer: session?.usedRandomizer,
-      mysteryOpenerIndex: session?.mysteryOpenerIndex,
-      savedAt: new Date().toISOString(),
-    };
+  const save = (messages, timeline, phaseIdx, session, turnsInPhase, phaseRemainingSec, scenarioElapsedSec, liveFacilitatorConfig) => {
     try {
-      await window.storage.set(key, JSON.stringify(payload));
+      localStorage.setItem(key, JSON.stringify({
+        messages, timeline, phaseIdx, turnsInPhase, phaseRemainingSec, scenarioElapsedSec,
+        // Persist enough session metadata to reconstruct on resume
+        sessionName: session?.sessionName,
+        playbook: session?.playbook,
+        participants: session?.participants,
+        facilitatorConfig: liveFacilitatorConfig || session?.facilitatorConfig,
+        companyProfile: session?.companyProfile,
+        usedRandomizer: session?.usedRandomizer,
+        mysteryOpenerIndex: session?.mysteryOpenerIndex,
+        secondaryScenario: session?.secondaryScenario,
+        blendRelation: session?.blendRelation,
+        mysterySlot: session?.mysterySlot,
+        savedAt: new Date().toISOString(),
+      }));
     } catch (e) {
-      // Write failed (e.g. payload over the storage size limit) — prune oldest messages and retry once
-      try {
-        await window.storage.set(key, JSON.stringify({ ...payload, messages: messages.slice(-30) }));
-      } catch { /* silent */ }
+      // Quota exceeded — prune oldest messages and retry once
+      if (e.name === "QuotaExceededError") {
+        try {
+          const trimmed = messages.slice(-30);
+          localStorage.setItem(key, JSON.stringify({
+            messages: trimmed, timeline, phaseIdx, turnsInPhase, phaseRemainingSec, scenarioElapsedSec,
+            sessionName: session?.sessionName,
+            playbook: session?.playbook,
+            participants: session?.participants,
+            facilitatorConfig: liveFacilitatorConfig || session?.facilitatorConfig,
+            companyProfile: session?.companyProfile,
+            usedRandomizer: session?.usedRandomizer,
+            mysteryOpenerIndex: session?.mysteryOpenerIndex,
+            secondaryScenario: session?.secondaryScenario,
+            blendRelation: session?.blendRelation,
+            mysterySlot: session?.mysterySlot,
+            savedAt: new Date().toISOString(),
+          }));
+        } catch { /* silent */ }
+      }
     }
   };
 
-  const clear = async () => { try { await window.storage.delete(key); } catch { /* silent */ } };
+  const clear = () => { try { localStorage.removeItem(key); } catch { /* silent */ } };
 
   return { load, save, clear };
 }
@@ -3168,14 +3566,8 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
   // while the tab is backgrounded is handled gracefully without ever counting time that
   // elapsed while this component wasn't mounted at all.
   const lastTickRef = useRef(Date.now());
-  // Mirror the latest phaseRemainingSec/scenarioElapsedSec outside of React state so the
-  // persist effect below can read the CURRENT tick value without depending on it directly —
-  // see that effect's comment for why depending on it directly was a problem after the
-  // window.storage migration. Kept in sync by the ticking effect on every 1-second tick.
-  const phaseRemainingSecRef = useRef(null);
-  const scenarioElapsedSecRef = useRef(0);
   const [messages, setMessages] = useState([]);
-  const [timeline, setTimeline] = useState([{ label: "Exercise started", detail: `${session.scenario.name} · ${playbook.name}`, time: new Date().toLocaleTimeString() }]);
+  const [timeline, setTimeline] = useState([{ label: "Exercise started", detail: `${scenarioLabel(session)} · ${playbook.name}`, time: new Date().toLocaleTimeString() }]);
   const [loading, setLoading] = useState(false);
   const [tab, setTab] = useState("discussion");
   const [facilitatorConfig, setFacilitatorConfig] = useState(session.facilitatorConfig);
@@ -3232,29 +3624,10 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
     return data.content?.find(b => b.type === "text")?.text || "";
   };
 
-  // Persist session state on every message/phase/turn/config change — deliberately NOT on
-  // every 1-second countdown tick (phaseRemainingSec/scenarioElapsedSec are read from the
-  // refs above instead of being listed as dependencies here). window.storage is a real
-  // (rate-limited) API call, unlike the old synchronous localStorage — saving on every
-  // single tick for the entire length of an exercise risked hammering the storage API
-  // continuously, silently dropping some writes (our error handling swallows failures by
-  // design) and occasionally leaving a resumed session missing recent messages or showing a
-  // stale turn count. The periodic backstop effect below still keeps the countdown/elapsed
-  // time reasonably fresh on its own slower cadence.
+  // Persist to localStorage after every message or phase change
   useEffect(() => {
-    if (messages.length > 0) storage.save(messages, timeline, phaseIdx, session, turnsInPhase, phaseRemainingSecRef.current, scenarioElapsedSecRef.current, facilitatorConfig);
-  }, [messages, timeline, phaseIdx, turnsInPhase, facilitatorConfig]);
-
-  // Periodic backstop: re-persists the same payload (picking up the latest tick values via
-  // the refs) every 10 seconds, independent of the effect above — so a long stretch where
-  // the team is discussing without sending a chat message still keeps the saved countdown
-  // reasonably current, without writing to storage every single second.
-  useEffect(() => {
-    const id = setInterval(() => {
-      if (messages.length > 0) storage.save(messages, timeline, phaseIdx, session, turnsInPhase, phaseRemainingSecRef.current, scenarioElapsedSecRef.current, facilitatorConfig);
-    }, 10000);
-    return () => clearInterval(id);
-  }, [messages, timeline, phaseIdx, turnsInPhase, facilitatorConfig]);
+    if (messages.length > 0) storage.save(messages, timeline, phaseIdx, session, turnsInPhase, phaseRemainingSec, scenarioElapsedSec, facilitatorConfig);
+  }, [messages, timeline, phaseIdx, turnsInPhase, phaseRemainingSec, scenarioElapsedSec, facilitatorConfig]);
 
   // Live countdown/elapsed tick — decrements phaseRemainingSec and accumulates
   // scenarioElapsedSec once per second, but ONLY while this component is mounted. Each tick
@@ -3267,16 +3640,8 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
       const now = Date.now();
       const deltaSec = (now - lastTickRef.current) / 1000;
       lastTickRef.current = now;
-      setPhaseRemainingSec(sec => {
-        const next = sec == null ? sec : Math.max(0, sec - deltaSec);
-        phaseRemainingSecRef.current = next;
-        return next;
-      });
-      setScenarioElapsedSec(sec => {
-        const next = sec + deltaSec;
-        scenarioElapsedSecRef.current = next;
-        return next;
-      });
+      setPhaseRemainingSec(sec => (sec == null ? sec : Math.max(0, sec - deltaSec)));
+      setScenarioElapsedSec(sec => sec + deltaSec);
     }, 1000);
     return () => clearInterval(id);
   }, []);
@@ -3286,46 +3651,36 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
     if (session._resumeData) {
       const r = session._resumeData;
       setMessages(r.messages || []);
-      setTimeline(r.timeline || [{ label: "Session resumed", detail: session.scenario.name, time: new Date().toLocaleTimeString() }]);
+      setTimeline(r.timeline || [{ label: "Session resumed", detail: scenarioLabel(session), time: new Date().toLocaleTimeString() }]);
       const restoredPhaseIdx = r.phaseIdx || 0;
       setPhaseIdx(restoredPhaseIdx);
       setTurnsInPhase(r.turnsInPhase || 0);
       const resolvedLimit = getPhaseTimeLimitMinutes(facilitatorConfig, phases[restoredPhaseIdx]);
       lastPhaseLimitRef.current = resolvedLimit;
-      let restoredPhaseRemainingSec;
       if (typeof r.phaseRemainingSec === "number") {
         // Current format: the exact remaining duration, saved directly — resume picks up
         // from precisely here regardless of how much real time passed while away.
-        restoredPhaseRemainingSec = r.phaseRemainingSec;
+        setPhaseRemainingSec(r.phaseRemainingSec);
       } else if (typeof r.phaseStartedAt === "number" && resolvedLimit != null) {
         // Migrating a session saved before this duration-based rework existed (it only
         // had a wall-clock start timestamp) — derive ONE last timestamp-based value here
         // so the migration doesn't jump back to a full countdown, then switch entirely to
         // duration-tracking (no more wall-clock math) from this point forward.
-        restoredPhaseRemainingSec = Math.max(0, resolvedLimit * 60 - (Date.now() - r.phaseStartedAt) / 1000);
+        setPhaseRemainingSec(Math.max(0, resolvedLimit * 60 - (Date.now() - r.phaseStartedAt) / 1000));
       } else {
-        restoredPhaseRemainingSec = resolvedLimit != null ? resolvedLimit * 60 : null;
+        setPhaseRemainingSec(resolvedLimit != null ? resolvedLimit * 60 : null);
       }
-      setPhaseRemainingSec(restoredPhaseRemainingSec);
-      phaseRemainingSecRef.current = restoredPhaseRemainingSec;
-
-      let restoredScenarioElapsedSec;
       if (typeof r.scenarioElapsedSec === "number") {
-        restoredScenarioElapsedSec = r.scenarioElapsedSec;
+        setScenarioElapsedSec(r.scenarioElapsedSec);
       } else if (typeof r.scenarioStartedAt === "number") {
-        restoredScenarioElapsedSec = (Date.now() - r.scenarioStartedAt) / 1000;
+        setScenarioElapsedSec((Date.now() - r.scenarioStartedAt) / 1000);
       } else {
-        restoredScenarioElapsedSec = 0;
+        setScenarioElapsedSec(0);
       }
-      setScenarioElapsedSec(restoredScenarioElapsedSec);
-      scenarioElapsedSecRef.current = restoredScenarioElapsedSec;
     } else {
       const resolvedLimit = getPhaseTimeLimitMinutes(facilitatorConfig, phases[0]);
       lastPhaseLimitRef.current = resolvedLimit;
-      const freshPhaseRemainingSec = resolvedLimit != null ? resolvedLimit * 60 : null;
-      setPhaseRemainingSec(freshPhaseRemainingSec);
-      phaseRemainingSecRef.current = freshPhaseRemainingSec;
-      scenarioElapsedSecRef.current = 0;
+      setPhaseRemainingSec(resolvedLimit != null ? resolvedLimit * 60 : null);
       initSession();
     }
     lastTickRef.current = Date.now();
@@ -3343,9 +3698,7 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
     if (!initializedRef.current) return;
     if (phaseLimitMinutes !== lastPhaseLimitRef.current) {
       lastPhaseLimitRef.current = phaseLimitMinutes;
-      const next = phaseLimitMinutes != null ? phaseLimitMinutes * 60 : null;
-      setPhaseRemainingSec(next);
-      phaseRemainingSecRef.current = next;
+      setPhaseRemainingSec(phaseLimitMinutes != null ? phaseLimitMinutes * 60 : null);
     }
   }, [phaseLimitMinutes]);
 
@@ -3374,26 +3727,43 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
   }, []);
 
   const getSystemPrompt = (turnOverride) =>
-    buildSystemPrompt(facilitatorConfig, session.scenario, playbook, currentPhase, session.participants, turnOverride ?? turnsInPhase, facilitatorConfig.maxTurns, nextPhase, isLastPhase, session.usedRandomizer, session.companyProfile);
+    buildSystemPrompt(facilitatorConfig, session.scenario, playbook, currentPhase, session.participants, turnOverride ?? turnsInPhase, facilitatorConfig.maxTurns, nextPhase, isLastPhase, session.usedRandomizer && !session.secondaryScenario, session.companyProfile, session.secondaryScenario, session.blendRelation, session.mysterySlot);
 
   const initSession = async () => {
     setLoading(true);
     try {
       const mysteryOpener = MYSTERY_OPENERS[session.mysteryOpenerIndex ?? 0];
-      const openingInstruction = session.usedRandomizer
-        ? `Begin the tabletop exercise. Write 2-3 flowing narrative paragraphs — do NOT use markdown headers, section titles, horizontal rules, or bullet lists; this is a single continuous scene-setting message, not a templated report. Weave in this scene-setting description almost verbatim as your opening (light rewording for flow is fine, but preserve its ambiguity and do not add any technical indicator, mechanism, or category hint of your own): "${mysteryOpener}" Per CORE BEHAVIOR, do not explain what the ${phases[0]} phase of ${playbook.name} requires or what the team should be doing about it — just present the situation. End by stating the situation as it currently stands — do not ask a question or suggest what the team should do. Wait for them to act.`
-        : `Begin the tabletop exercise. Write 2-3 flowing narrative paragraphs — do NOT use markdown headers, section titles, horizontal rules, or bullet lists; this is a single continuous scene-setting message, not a templated report. Describe the initial business/user-facing symptoms and impact of this ${session.scenario.name} incident — what staff, customers, or monitoring tools would notice — WITHOUT revealing the specific technical root cause, attack source, or mechanism (per the ROOT-CAUSE INVESTIGATION instruction). Per CORE BEHAVIOR, do not explain what the ${phases[0]} phase of ${playbook.name} requires or what steps the team should take — just present the situation and let the team's own playbook knowledge guide their next move. End by stating the situation as it currently stands — do not ask a question or suggest what the team should do. Wait for them to act.`;
+      // Added after tester feedback that opening scenes were padded with negative-space
+      // detail — narrating what ISN'T a problem (dashboards green, no alerts fired) and IR
+      // readiness/resources that haven't been activated (plan on file, retainer current,
+      // analyst available) — which dilutes urgency and hands the team information they didn't
+      // have to work for. This rule targets exactly that pattern; see TEST_CHECKLIST.md §9.
+      const noPaddingRule = `Do NOT pad the scene with negative-space detail: no listing systems/tools that are NOT showing a problem (e.g. "the dashboard is green," "no alerts have fired"), no describing IR readiness or resources that haven't been activated (e.g. "the response plan is on file," "the retainer is current," "the analyst is available"), and no narrating routine internal process beyond the bare fact that something was reported (e.g. cut "logged the tickets but has not yet escalated or correlated them" down to just noting the reports came in). State only what has actually been observed, then stop.`;
+      const openingInstruction = session.secondaryScenario
+        ? (session.mysterySlot
+            ? (() => {
+                const knownScenario = session.mysterySlot === "A" ? session.secondaryScenario : session.scenario;
+                const mysteryLabel = session.mysterySlot === "A" ? "Incident A" : "Incident B";
+                return `Begin the tabletop exercise. Write 2 short paragraphs (roughly 100-130 words total) — do NOT use markdown headers, section titles, horizontal rules, or bullet lists; this is a single continuous scene-setting message, not a templated report. Per BLENDED INCIDENTS, weave together TWO threads into ONE opening scene — do not present them as two separate reports back to back: (1) the MYSTERY THREAD (${mysteryLabel}) — incorporate this scene-setting description almost verbatim as part of the scene (light rewording for flow is fine, but preserve its ambiguity and do not add any technical indicator, mechanism, or category hint of your own on top of it): "${mysteryOpener}"; (2) the KNOWN scenario "${knownScenario.name}" — describe only its initial business/user-facing symptoms, WITHOUT revealing its specific technical root cause, attack source, or mechanism (per ROOT-CAUSE INVESTIGATION). ${noPaddingRule} Per CORE BEHAVIOR, do not explain what the ${phases[0]} phase of ${playbook.name} requires or what steps the team should take. Remember the required [THREAD:A]/[THREAD:B]/[THREAD:BOTH] tag on its own line before the narrative. End by stating the situation as it currently stands — do not ask a question or suggest what the team should do. Wait for them to act.`;
+              })()
+            : `Begin the tabletop exercise. Write 2 short paragraphs (roughly 100-130 words total) — do NOT use markdown headers, section titles, horizontal rules, or bullet lists; this is a single continuous scene-setting message, not a templated report. Per BLENDED INCIDENTS, weave together the initial business/user-facing symptoms of BOTH "${session.scenario.name}" and "${session.secondaryScenario.name}" into ONE opening scene — do not present them as two separate reports back to back. WITHOUT revealing either specific technical root cause, attack source, or mechanism (per ROOT-CAUSE INVESTIGATION), describe only what staff, customers, or monitoring tools would notice from each thread. ${noPaddingRule} Per CORE BEHAVIOR, do not explain what the ${phases[0]} phase of ${playbook.name} requires or what steps the team should take. Remember the required [THREAD:A]/[THREAD:B]/[THREAD:BOTH] tag on its own line before the narrative. End by stating the situation as it currently stands — do not ask a question or suggest what the team should do. Wait for them to act.`)
+        : session.usedRandomizer
+        ? `Begin the tabletop exercise. Write 2 short paragraphs (roughly 100-130 words total) — do NOT use markdown headers, section titles, horizontal rules, or bullet lists; this is a single continuous scene-setting message, not a templated report. Weave in this scene-setting description almost verbatim as your opening (light rewording for flow is fine, but preserve its ambiguity and do not add any technical indicator, mechanism, or category hint of your own, and do not add extra sentences of your own about unrelated systems being fine or IR resources being available): "${mysteryOpener}" Per CORE BEHAVIOR, do not explain what the ${phases[0]} phase of ${playbook.name} requires or what the team should be doing about it — just present the situation. End by stating the situation as it currently stands — do not ask a question or suggest what the team should do. Wait for them to act.`
+        : `Begin the tabletop exercise. Write 2 short paragraphs (roughly 100-130 words total) — do NOT use markdown headers, section titles, horizontal rules, or bullet lists; this is a single continuous scene-setting message, not a templated report. Describe the initial business/user-facing symptoms and impact of this ${session.scenario.name} incident — what staff, customers, or monitoring tools would notice — WITHOUT revealing the specific technical root cause, attack source, or mechanism (per the ROOT-CAUSE INVESTIGATION instruction). ${noPaddingRule} Per CORE BEHAVIOR, do not explain what the ${phases[0]} phase of ${playbook.name} requires or what steps the team should take — just present the situation and let the team's own playbook knowledge guide their next move. End by stating the situation as it currently stands — do not ask a question or suggest what the team should do. Wait for them to act.`;
       const text = await callClaude(
         [{ role: "user", content: openingInstruction }],
         getSystemPrompt()
       );
       setMessages([{ role: "ai", text, time: new Date().toLocaleTimeString() }]);
     } catch {
+      const knownScenario = session.mysterySlot === "A" ? session.secondaryScenario : session.scenario;
       setMessages([{
         role: "ai",
         text: session.usedRandomizer
-          ? MYSTERY_OPENERS[session.mysteryOpenerIndex ?? 0]
-          : `Exercise initiated. Your team is responding to a ${session.scenario.name} incident. Begin investigating to determine the root cause and appropriate response.`,
+          ? (session.secondaryScenario
+              ? `Exercise initiated. Your team is responding to a blended incident — one thread confirmed as a ${knownScenario.name} incident, the other still unidentified. ${MYSTERY_OPENERS[session.mysteryOpenerIndex ?? 0]}`
+              : MYSTERY_OPENERS[session.mysteryOpenerIndex ?? 0])
+          : `Exercise initiated. Your team is responding to a ${scenarioLabel(session)} incident. Begin investigating to determine the root cause and appropriate response.`,
         time: new Date().toLocaleTimeString(),
       }]);
     }
@@ -3503,9 +3873,7 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
     // only for a numeric-value change, would otherwise miss).
     const nextLimit = getPhaseTimeLimitMinutes(facilitatorConfig, next);
     lastPhaseLimitRef.current = nextLimit;
-    const nextPhaseRemainingSec = nextLimit != null ? nextLimit * 60 : null;
-    setPhaseRemainingSec(nextPhaseRemainingSec);
-    phaseRemainingSecRef.current = nextPhaseRemainingSec;
+    setPhaseRemainingSec(nextLimit != null ? nextLimit * 60 : null);
     const reasonLabel = reason === "time" ? "time limit reached" : "turn limit reached";
     setTimeline(prev => [...prev, {
       label: auto ? `Phase auto-advanced: ${next} (${reasonLabel})` : `Phase: ${next}`,
@@ -3529,7 +3897,8 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
     const newNextPhase = newIsLastPhase ? null : phases[newPhaseIdx + 1];
     const transitionSystemPrompt = buildSystemPrompt(
       facilitatorConfig, session.scenario, playbook, next, session.participants,
-      0, facilitatorConfig.maxTurns, newNextPhase, newIsLastPhase, session.usedRandomizer, session.companyProfile
+      0, facilitatorConfig.maxTurns, newNextPhase, newIsLastPhase, session.usedRandomizer && !session.secondaryScenario, session.companyProfile,
+      session.secondaryScenario, session.blendRelation, session.mysterySlot
     );
     const transitionInstruction = reason === "time"
       ? `Time ran out for the ${outgoingPhase} phase before the team indicated they were ready to move on — the organization is being pushed into ${next} without full readiness. Write a short (2-4 sentence) transition message in flowing prose (no markdown headers, horizontal rules, or bullet lists) with a NEGATIVE, pressured tone plausible for ${session.scenario.name} — e.g. a CEO or executive demanding visible progress, an operations lead saying the business cannot wait any longer, a regulator's clock ticking, mounting media attention, or another pressure that fits this scenario. Narrate the shift into ${next} as forced by circumstance, not a deliberate, well-prepared choice. Base this strictly on what the team ACTUALLY did and observed during the ${outgoingPhase} phase, per the conversation above — do NOT invent confirmations, findings, or completed steps the team didn't actually establish. If it fits, it's fine (and often more accurate) to reference specifically what was left unresolved or unaddressed when time ran out, rather than inventing new unrelated events. Per CORE BEHAVIOR, do not explain what ${next} requires or what steps the team should take — just set the scene. Do not mention "time limit," "turn limit," or the app's mechanics directly — frame this purely as an in-world development. End with a single action-inviting line suited to ${next} that reflects the urgency.`
@@ -3647,6 +4016,9 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
           <div className="grid-2 gap-4">
             <AIChat
               scenario={session.scenario}
+              secondaryScenario={session.secondaryScenario}
+              mysterySlot={session.mysterySlot}
+              showIncidentTags={facilitatorConfig.showIncidentTags}
               phase={currentPhase}
               messages={messages}
               onMessage={sendMessage}
@@ -3655,14 +4027,14 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
               multiMode={multiMode}
               onToggleMultiMode={() => setMultiMode(v => !v)}
               onMultiSend={sendMultiRoleMessage}
-              hideScenarioName={session.usedRandomizer}
+              hideScenarioName={session.usedRandomizer && !session.secondaryScenario}
               exerciseConcluded={exerciseConcluded}
               onCompleteExercise={() => setConfirmModal("complete")}
             />
             <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
               <div className="card">
                 <div className="card-title">SCENARIO BRIEF</div>
-                {session.usedRandomizer ? (
+                {session.usedRandomizer && !session.secondaryScenario ? (
                   <>
                     <div style={{ display: "flex", gap: 12, alignItems: "flex-start", marginBottom: 10 }}>
                       <span style={{ fontSize: 28 }}>🎲</span>
@@ -3674,6 +4046,31 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
                     <div style={{ fontSize: 13, color: "#6b82a0", lineHeight: 1.6 }}>
                       This scenario was randomly selected. Your team won't know what you're facing — read the facilitator's updates carefully and respond to what unfolds.
                     </div>
+                  </>
+                ) : session.secondaryScenario ? (
+                  <>
+                    <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+                      <span className="tag" style={{ background: "rgba(167,139,250,0.15)", color: "#a78bfa", border: "1px solid rgba(167,139,250,0.3)" }}>
+                        🧬 Blended Incidents{session.mysterySlot ? " · 🎲 Mystery" : ""}
+                      </span>
+                    </div>
+                    {[{ sc: session.scenario, slot: "A" }, { sc: session.secondaryScenario, slot: "B" }].map(({ sc, slot }, i) => {
+                      const hidden = session.mysterySlot === slot;
+                      return (
+                        <div key={slot} style={{ display: "flex", gap: 12, alignItems: "flex-start", marginBottom: i === 0 ? 10 : 0, paddingTop: i === 1 ? 10 : 0, borderTop: i === 1 ? "1px solid #1a2a3a" : "none" }}>
+                          <span style={{ fontSize: 24 }}>{hidden ? "🎲" : sc.icon}</span>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 2 }}>
+                              <span style={{ fontWeight: 600, color: "#e0eaff" }}>{hidden ? "Mystery Scenario" : sc.name}</span>
+                              {!hidden && <span className={`badge badge-severity-${sc.severity}`}>{sc.severity}</span>}
+                            </div>
+                            <div style={{ fontSize: 12, color: "#6b82a0", lineHeight: 1.5 }}>
+                              {hidden ? "This thread was randomly selected — your team won't know its category until they investigate." : sc.description}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </>
                 ) : (
                   <>
@@ -3710,7 +4107,7 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
 
         {tab === "injects" && (
           <div className="grid-2 gap-4">
-            <InjectPanel scenario={session.scenario} onInject={injectScenario} companyProfile={session.companyProfile} />
+            <InjectPanel scenario={session.scenario} secondaryScenario={session.secondaryScenario} mysterySlot={session.mysterySlot} showIncidentTags={facilitatorConfig.showIncidentTags} onInject={injectScenario} companyProfile={session.companyProfile} />
             <CustomInject onInject={injectScenario} />
           </div>
         )}
@@ -3767,9 +4164,12 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
                 config={facilitatorConfig}
                 onChange={setFacilitatorConfig}
                 scenario={session.scenario}
+                secondaryScenario={session.secondaryScenario}
+                blendRelation={session.blendRelation}
+                mysterySlot={session.mysterySlot}
                 playbook={session.playbook}
                 participants={session.participants}
-                mystery={session.usedRandomizer}
+                mystery={session.usedRandomizer && !session.secondaryScenario}
                 companyProfile={session.companyProfile}
               />
             </div>
@@ -3785,11 +4185,11 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
           body={`You're currently in the ${currentPhase} phase with ${messages.reduce((acc, m) => m.role === "ai" ? acc : acc + (m.multi ? m.authors.length : 1), 0)} responses logged. Ending early will stop the exercise and take you to the After-Action Report. This cannot be undone.`}
           confirmLabel="End Exercise"
           confirmStyle={{ background: "rgba(220,38,38,0.2)", color: "#f87171", border: "1px solid rgba(220,38,38,0.4)" }}
-          onConfirm={async () => {
+          onConfirm={() => {
             setConfirmModal(null);
             speech.stop(); // stop narration immediately — don't wait for the ExerciseView unmount cleanup
-            await lastPlayedStorage.save(session.scenario, session.playbook, session.sessionName);
-            await storage.clear();
+            lastPlayedStorage.save(session.scenario, session.playbook, session.sessionName);
+            storage.clear();
             onEnd(messages, timeline);
           }}
           onCancel={() => setConfirmModal(null)}
@@ -3802,11 +4202,11 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
           body="This will end the session and generate your After-Action Report. Make sure your team has finished discussing the final phase before proceeding."
           confirmLabel="Complete Exercise ✓"
           confirmStyle={{ background: "rgba(22,163,74,0.2)", color: "#4ade80", border: "1px solid rgba(22,163,74,0.4)" }}
-          onConfirm={async () => {
+          onConfirm={() => {
             setConfirmModal(null);
             speech.stop(); // stop narration immediately — don't wait for the ExerciseView unmount cleanup
-            await lastPlayedStorage.save(session.scenario, session.playbook, session.sessionName);
-            await storage.clear();
+            lastPlayedStorage.save(session.scenario, session.playbook, session.sessionName);
+            storage.clear();
             onEnd(messages, timeline);
           }}
           onCancel={() => setConfirmModal(null)}
@@ -3821,7 +4221,7 @@ export default function App() {
   const [screen, setScreen] = useState("landing"); // landing | resume | setup | exercise | aar
   const [session, setSession] = useState(null);
   const [exerciseData, setExerciseData] = useState({ messages: [], timeline: [], duration: 0 });
-  const [savedSession, setSavedSession] = useState(null); // active unfinished session found in persistent storage
+  const [savedSession, setSavedSession] = useState(null); // active unfinished session found in localStorage
   const [lastPlayed, setLastPlayed] = useState(null);     // most recently completed scenario
   // "Total session time" shown live in the Topbar and recorded as the AAR's final duration.
   // This used to be tracked independently here via a `startTimeRef` timestamp (reset to
@@ -3838,25 +4238,17 @@ export default function App() {
 
   // Load lastPlayed on mount — always show it on scenario selection
   useEffect(() => {
-    (async () => setLastPlayed(await lastPlayedStorage.load()))();
+    setLastPlayed(lastPlayedStorage.load());
   }, []);
 
-  const handleBegin = async () => {
+  const handleBegin = () => {
     // Check for an active unfinished session. Sort by savedAt (most recent first) in case
     // more than one stale session key exists — e.g. leftovers from before this cleanup
     // logic existed — so the most recently active one is what gets offered for resume.
-    let allKeys = [];
-    try {
-      const { keys } = (await window.storage.list("tactician:")) || { keys: [] };
-      allKeys = keys.filter(k => k !== LAST_PLAYED_KEY);
-    } catch { /* no keys yet, or list() failed — fall through to setup like a fresh user */ }
-    const results = await Promise.all(allKeys.map(async k => {
-      try {
-        const result = await window.storage.get(k);
-        return result?.value ? { key: k, ...JSON.parse(result.value) } : null;
-      } catch { return null; }
-    }));
-    const candidates = results.filter(Boolean).filter(s => s.messages?.length > 0);
+    const allKeys = Object.keys(localStorage).filter(k => k.startsWith("tactician:") && k !== LAST_PLAYED_KEY);
+    const candidates = allKeys.map(k => {
+      try { return { key: k, ...JSON.parse(localStorage.getItem(k)) }; } catch { return null; }
+    }).filter(Boolean).filter(s => s.messages?.length > 0);
     candidates.sort((a, b) => new Date(b.savedAt || 0) - new Date(a.savedAt || 0));
     const found = candidates[0];
 
@@ -3873,12 +4265,18 @@ export default function App() {
     // Reconstruct a minimal session object from the saved data so ExerciseView can render
     // The full session config was saved inside the storage key name — we pass savedSession
     // directly through to ExerciseView via a special resume path
-    setSavedSession(prev => prev); // keep it; ExerciseView will read from persistent storage by key
+    setSavedSession(prev => prev); // keep it; ExerciseView will read from localStorage by key
     // We need to rebuild the session from the storage key and stored scenario info.
     // Since we only have metadata in the key, we match against SCENARIOS + INDUSTRY_PLAYBOOKS.
+    // The scenario segment of the key may be "id" (single) or "id+id" (Blended Incidents —
+    // see storageKey()), so split on "+" before matching against SCENARIOS.
     const keyParts = savedSession.key.replace("tactician:", "").split(":");
-    const scenarioId = keyParts[keyParts.length - 1];
+    const scenarioSegment = keyParts[keyParts.length - 1];
+    const [scenarioId, secondaryScenarioId] = scenarioSegment.split("+");
     const scenario = SCENARIOS.find(s => s.id === scenarioId) || SCENARIOS[0];
+    const secondaryScenario = secondaryScenarioId
+      ? (SCENARIOS.find(s => s.id === secondaryScenarioId) || savedSession.secondaryScenario || null)
+      : (savedSession.secondaryScenario || null);
     // Reconstruct playbook — prefer saved object, then match by name, then default to CISA
     const savedPlaybook = savedSession.playbook;
     const playbook = savedPlaybook?.phases?.length
@@ -3888,6 +4286,9 @@ export default function App() {
     // Build a minimal session — participants and facilitatorConfig from saved data or defaults
     const restoredSession = {
       scenario,
+      secondaryScenario,
+      blendRelation: savedSession.blendRelation || null,
+      mysterySlot: savedSession.mysterySlot || null,
       playbook,
       participants: savedSession.participants || [{ role: "Facilitator", name: "", id: "Facilitator", active: true }],
       sessionName: savedSession.sessionName || keyParts.slice(0, -1).join(" "),
@@ -3919,35 +4320,35 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: "instant" });
   };
 
-  const handleStart = async (s) => {
+  const handleStart = (s) => {
     // A new exercise is genuinely launching now — this is the point of no return for any
     // previously declined/abandoned session, so clean up every other saved session key.
     // (Declining the resume prompt via "Start New Exercise" intentionally does NOT do this
     // — that session stays resumable until an exercise is actually launched.)
-    await clearOtherSessions(storageKey(s));
+    clearOtherSessions(storageKey(s));
     setSession(s);
     setElapsedSec(0);
     setScreen("exercise");
     window.scrollTo({ top: 0, behavior: "instant" });
   };
 
-  const handleEnd = async (messages, timeline) => {
+  const handleEnd = (messages, timeline) => {
     // elapsedSec is kept live by ExerciseView's onElapsedChange callback (ticking once per
     // second, same value the Entire-Scenario time-limit feature uses), so it already
     // reflects the exercise's real active duration — no separate timestamp math needed here.
     const duration = Math.floor(elapsedSec);
     setExerciseData({ messages, timeline, duration });
-    setLastPlayed(await lastPlayedStorage.load()); // refresh after exercise writes lastPlayed
+    setLastPlayed(lastPlayedStorage.load()); // refresh after exercise writes lastPlayed
     setScreen("aar");
     window.scrollTo({ top: 0, behavior: "instant" });
   };
 
-  const handleNewScenario = async () => {
+  const handleNewScenario = () => {
     setSession(null);
     setSavedSession(null);
     setExerciseData({ messages: [], timeline: [], duration: 0 });
     setElapsedSec(0);
-    setLastPlayed(await lastPlayedStorage.load());
+    setLastPlayed(lastPlayedStorage.load());
     setScreen("setup");
     window.scrollTo({ top: 0, behavior: "instant" });
   };
