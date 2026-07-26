@@ -11,11 +11,46 @@ const SCENARIOS = [
 ];
 
 const INDUSTRY_PLAYBOOKS = [
-  { id: "cisa", name: "CISA Incident Response", type: "industry", phases: ["Preparation", "Detection & Analysis", "Containment", "Eradication", "Recovery", "Post-Incident"] },
-  { id: "nist", name: "NIST SP 800-61", type: "industry", phases: ["Preparation", "Detection & Analysis", "Containment, Eradication & Recovery", "Post-Incident Activity"] },
+  {
+    id: "cisa", name: "CISA Incident Response", type: "industry",
+    description: "A six-phase incident response lifecycle from the Cybersecurity and Infrastructure Security Agency for detecting, containing, and recovering from a security incident.",
+    phases: ["Preparation", "Detection & Analysis", "Containment", "Eradication", "Recovery", "Post-Incident"],
+  },
+  {
+    id: "nist", name: "NIST SP 800-61", type: "industry",
+    description: "The NIST computer security incident handling guide, spanning live incident response, post-incident lessons learned, and ongoing preparation.",
+    // Only the Incident Response group is run live during the exercise — see `phases` below.
+    // Lessons Learned and Preparation are surfaced afterward, in the AAR, as feedback (see `aarPhases`).
+    // `phaseGroups` drives the grouped display on the playbook selection card only.
+    phaseGroups: [
+      { label: "Incident Response", phases: ["Detect", "Respond", "Recover"] },
+      { label: "Lessons Learned", phases: ["Lessons Learned"] },
+      { label: "Preparation", phases: ["Govern", "Identify", "Protect"] },
+    ],
+    phases: ["Detect", "Respond", "Recover"],
+    aarPhases: ["Lessons Learned", "Govern", "Identify", "Protect"],
+  },
 ];
 
 const ROLES = ["Facilitator", "Incident Commander", "Security Analyst", "Network Engineer", "Legal / Compliance", "Communications Lead", "Executive Sponsor", "Observer"];
+
+// Facilitator-facing "Phase Focus" hint text, keyed by phase NAME rather than index, so it
+// stays correct regardless of which playbook (and therefore which phase list/order) is
+// active — e.g. NIST's live exercise phases (Detect/Respond/Recover) don't line up
+// positionally with CISA's six-phase list. See ExerciseView's `phaseGuidance`.
+const PHASE_GUIDANCE = {
+  "Preparation": "Confirm roles, channels, and tools. Ensure the playbook is accessible.",
+  "Detection & Analysis": "Identify indicators of compromise. Classify severity. Notify stakeholders. Preserve evidence.",
+  "Containment": "Isolate affected systems. Block attacker paths. Prevent further damage.",
+  "Eradication": "Remove malicious artifacts. Patch vulnerabilities. Validate systems are clean.",
+  "Recovery": "Restore from known-good state. Validate functionality. Monitor closely.",
+  "Post-Incident": "Document findings. Brief leadership. Update playbook. Plan next exercises.",
+  "Containment, Eradication & Recovery": "Isolate affected systems, remove malicious artifacts, and restore from a known-good state.",
+  "Post-Incident Activity": "Document findings. Brief leadership. Update playbook. Plan next exercises.",
+  "Detect": "Identify indicators of compromise. Classify severity. Notify stakeholders. Preserve evidence.",
+  "Respond": "Contain the incident, remove malicious artifacts, and block attacker paths to prevent further damage.",
+  "Recover": "Restore from a known-good state, validate functionality, and monitor closely.",
+};
 
 // Industry options for the Company Profile step. `regulator` is a short label surfaced
 // in the AI system prompt and used as the {{regulator}} placeholder in inject text.
@@ -2037,7 +2072,21 @@ function ParticipantSetup({ onStart, lastPlayed }) {
                 <div style={{ fontSize: 24 }}>{pb.id === "cisa" ? "🏛" : "📋"}</div>
                 <div style={{ flex: 1 }}>
                   <div className="scenario-name" style={{ marginBottom: 6 }}>{pb.name}</div>
-                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>{pb.phases.map((p, i) => <span key={i} className="tag">{p}</span>)}</div>
+                  {pb.description && (
+                    <div style={{ fontSize: 12, color: "#5a7a9a", lineHeight: 1.5, marginBottom: 8 }}>{pb.description}</div>
+                  )}
+                  {pb.phaseGroups ? (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                      {pb.phaseGroups.map((g, gi) => (
+                        <div key={gi} style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                          <span style={{ fontSize: 10, color: "#3a5a7a", fontFamily: "'Share Tech Mono', monospace", textTransform: "uppercase", letterSpacing: ".04em", minWidth: 100 }}>{g.label}</span>
+                          {g.phases.map((p, i) => <span key={i} className="tag">{p}</span>)}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>{pb.phases.map((p, i) => <span key={i} className="tag">{p}</span>)}</div>
+                  )}
                 </div>
               </div>
             ))}
@@ -2824,6 +2873,9 @@ function AARView({ session, timeline, messages, duration, onNewScenario }) {
       const blendContext = session.secondaryScenario
         ? `\n\nBLENDED INCIDENTS: This session blended two scenarios into one feed — "${session.scenario.name}" and "${session.secondaryScenario.name}". The ACTUAL ground truth, which participants were never told directly during the exercise, is that the two incidents were ${session.blendRelation === "coordinated" ? "part of ONE coordinated attack" : "NOT actually connected — any apparent overlap was coincidental"}. Now that the exercise is over, reveal this plainly in a new "blendReveal" field, and assess how well the team recognized (or was misled by) the relationship between the two threads, and how well they prioritized/triaged across both.`
         : "";
+      const postExerciseContext = session.playbook.aarPhases?.length
+        ? `\n\nPOST-EXERCISE FEEDBACK: The "${session.playbook.name}" playbook also includes phases that are not run live during the drill — ${session.playbook.aarPhases.join(", ")} — but should be assessed now as forward-looking feedback. Populate "postExerciseFeedback" with a "lessonsLearned" array (retrospective items the team should formally document and review) and a "preparation" array (concrete governance, identification, and protection improvements to make before the next real incident).`
+        : "";
       const resp = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -2836,7 +2888,7 @@ Playbook: ${session.playbook.name}
 Duration: ${fmt(duration)}
 Participants: ${session.participants.map(p => `${p.name || p.role} (${p.role})`).join(", ")}
 Facilitator tone: ${session.facilitatorConfig.tone}, difficulty: ${session.facilitatorConfig.difficulty}
-Discussion log: ${log || "(No discussion captured — generate a realistic template AAR.)"}${blendContext}
+Discussion log: ${log || "(No discussion captured — generate a realistic template AAR.)"}${blendContext}${postExerciseContext}
 
 Return this exact JSON shape with no other text:
 {
@@ -2850,7 +2902,8 @@ Return this exact JSON shape with no other text:
     {"id": 3, "action": "specific action", "owner": "Role Title", "priority": "Low"}
   ],
   "nextSteps": ["specific step", "specific step", "specific step"]${session.secondaryScenario ? `,
-  "blendReveal": {"relation": "${session.blendRelation}", "explanation": "2-3 sentence plain-language reveal of how the two incidents were/weren't connected, and how well the team's own investigation tracked with reality"}` : ""}
+  "blendReveal": {"relation": "${session.blendRelation}", "explanation": "2-3 sentence plain-language reveal of how the two incidents were/weren't connected, and how well the team's own investigation tracked with reality"}` : ""}${session.playbook.aarPhases?.length ? `,
+  "postExerciseFeedback": {"lessonsLearned": ["specific lesson", "specific lesson"], "preparation": ["specific preparation item", "specific preparation item", "specific preparation item"]}` : ""}
 }` }]
         })
       });
@@ -2993,6 +3046,21 @@ Return this exact JSON shape with no other text:
     ${listItems(aarData?.playbookGaps, "⚠", "#b91c1c")}
   </div>
 
+  ${aarData?.postExerciseFeedback ? `
+  <div class="section" style="border-color:#c4b5fd;">
+    <div class="section-title" style="color:#7c3aed;">◈ Lessons Learned &amp; Preparation — Not Run During the Exercise</div>
+    <div class="two-col">
+      <div>
+        <div style="font-size:8pt;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#7c3aed;margin-bottom:6pt;">Lessons Learned</div>
+        ${listItems(aarData.postExerciseFeedback.lessonsLearned, "◈", "#7c3aed")}
+      </div>
+      <div>
+        <div style="font-size:8pt;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#7c3aed;margin-bottom:6pt;">Preparation</div>
+        ${listItems(aarData.postExerciseFeedback.preparation, "◈", "#7c3aed")}
+      </div>
+    </div>
+  </div>` : ""}
+
   <div class="section">
     <div class="section-title">Recommended Action Items</div>
     ${actionRows}
@@ -3117,6 +3185,19 @@ Return this exact JSON shape with no other text:
                 <div key={i} className="skeleton skeleton-block" style={{ width: `${w}%` }} />
               ))}
             </div>
+            {/* Lessons Learned & Preparation skeleton — only for playbooks with AAR-only phases */}
+            {session.playbook.aarPhases?.length > 0 && (
+              <div className="grid-2 gap-4">
+                {[0, 1].map(col => (
+                  <div key={col} className="card">
+                    <div className="skeleton skeleton-title" />
+                    {[90, 75].map((w, i) => (
+                      <div key={i} className="skeleton skeleton-block" style={{ width: `${w}%` }} />
+                    ))}
+                  </div>
+                ))}
+              </div>
+            )}
             {/* Action Items skeleton */}
             <div className="card">
               <div className="skeleton skeleton-title" />
@@ -3231,6 +3312,39 @@ Return this exact JSON shape with no other text:
                 ))}
               </div>
             </div>
+
+            {/* Post-Exercise Feedback — Lessons Learned & Preparation (phases not run live during the exercise) */}
+            {aarData.postExerciseFeedback && (
+              <div className="aar-card card">
+                <div className="aar-card-title card-title" style={{ color: "#a78bfa" }}>◈ LESSONS LEARNED & PREPARATION — NOT RUN DURING THE EXERCISE</div>
+                <div className="grid-2 gap-4">
+                  <div>
+                    <div style={{ fontSize: 11, color: "#3a5a7a", fontFamily: "'Share Tech Mono', monospace", marginBottom: 8, textTransform: "uppercase", letterSpacing: ".04em" }}>Lessons Learned</div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      {(aarData.postExerciseFeedback.lessonsLearned || []).map((item, i) => (
+                        <div key={i} style={{
+                          padding: "8px 12px", borderRadius: 5,
+                          background: "rgba(124,58,237,0.06)", border: "1px solid rgba(124,58,237,0.2)",
+                          fontSize: 13, color: "#b0c4da", lineHeight: 1.55,
+                        }}>{item}</div>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 11, color: "#3a5a7a", fontFamily: "'Share Tech Mono', monospace", marginBottom: 8, textTransform: "uppercase", letterSpacing: ".04em" }}>Preparation</div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      {(aarData.postExerciseFeedback.preparation || []).map((item, i) => (
+                        <div key={i} style={{
+                          padding: "8px 12px", borderRadius: 5,
+                          background: "rgba(124,58,237,0.06)", border: "1px solid rgba(124,58,237,0.2)",
+                          fontSize: 13, color: "#b0c4da", lineHeight: 1.55,
+                        }}>{item}</div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Action Items */}
             <div className="aar-card card">
@@ -3606,14 +3720,7 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
     (facilitatorConfig.turnLimitEnabled && turnsInPhase >= facilitatorConfig.maxTurns) ||
     (phaseLimitMinutes != null && phaseRemainingSec <= 0)
   );
-  const phaseGuidance = [
-    "Confirm roles, channels, and tools. Ensure the playbook is accessible.",
-    "Identify indicators of compromise. Classify severity. Notify stakeholders. Preserve evidence.",
-    "Isolate affected systems. Block attacker paths. Prevent further damage.",
-    "Remove malicious artifacts. Patch vulnerabilities. Validate systems are clean.",
-    "Restore from known-good state. Validate functionality. Monitor closely.",
-    "Document findings. Brief leadership. Update playbook. Plan next exercises.",
-  ];
+  const phaseGuidance = phases.map(p => PHASE_GUIDANCE[p] || "Work this phase according to your playbook's guidance.");
 
   const callClaude = async (msgs, system) => {
     const resp = await fetch("https://api.anthropic.com/v1/messages", {
