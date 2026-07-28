@@ -31,6 +31,38 @@ const INDUSTRY_PLAYBOOKS = [
 
 const ROLES = ["Facilitator", "Incident Commander", "Security Analyst", "Network Engineer", "Legal / Compliance", "Communications Lead", "Executive Sponsor", "Observer"];
 
+// AAR Score Card: fixed weights the app applies to Claude's 5 per-metric scores to compute
+// a DETERMINISTIC overallScore, rather than trusting Claude to compute (and be internally
+// consistent about) that number itself. Playbook Adherence and Decision Quality Under
+// Pressure are weighted highest since those most directly reflect the substance of the
+// team's own decisions — see AARView's `generate()` and `computeOverallScore()` below.
+const SCORE_METRIC_WEIGHTS = {
+  "Detection & Triage": 0.15,
+  "Containment & Eradication": 0.15,
+  "Communication & Escalation": 0.10,
+  "Playbook Adherence": 0.30,
+  "Decision Quality Under Pressure": 0.30,
+};
+
+// Computes overallScore from Claude's per-metric scores using SCORE_METRIC_WEIGHTS.
+// Unrecognized/missing metric names are ignored and the remaining weights are renormalized
+// (so a response missing one metric, or using slightly different naming, still produces a
+// sane 0-100 score rather than silently under-weighting toward 0). Rounds to the nearest
+// integer and clamps to [0, 100].
+function computeOverallScore(metrics) {
+  if (!Array.isArray(metrics) || metrics.length === 0) return null;
+  let weightedSum = 0;
+  let weightTotal = 0;
+  for (const m of metrics) {
+    const weight = SCORE_METRIC_WEIGHTS[m?.name];
+    if (weight == null || typeof m.score !== "number") continue;
+    weightedSum += m.score * weight;
+    weightTotal += weight;
+  }
+  if (weightTotal === 0) return null;
+  return Math.max(0, Math.min(100, Math.round(weightedSum / weightTotal)));
+}
+
 // Facilitator-facing "Phase Focus" hint text, keyed by phase NAME rather than index, so it
 // stays correct regardless of which playbook (and therefore which phase list/order) is
 // active — e.g. NIST's live exercise phases (Detect/Respond/Recover) don't line up
@@ -2694,6 +2726,17 @@ function AARView({ session, timeline, messages, duration, onNewScenario }) {
       const postExerciseContext = session.playbook.aarPhases?.length
         ? `\n\nPOST-EXERCISE FEEDBACK: The "${session.playbook.name}" playbook also includes phases that are not run live during the drill — ${session.playbook.aarPhases.join(", ")} — but should be assessed now as forward-looking feedback. Populate "postExerciseFeedback" with a "lessonsLearned" array (retrospective items the team should formally document and review) and a "preparation" array (concrete governance, identification, and protection improvements to make before the next real incident).`
         : "";
+      // Gamified scoring instructions: kept separate from postExerciseContext so both can
+      // co-exist. Deliberately weights the model toward the CONTENT of participant answers
+      // (playbook adherence, decision quality) rather than whether they used the hint/options
+      // facilitation aids — see FEATURES.md §9 "Score Card" for the rationale.
+      // NOTE: overallScore is NOT requested here — it's computed deterministically by
+      // computeOverallScore() from the 5 metric scores below, using SCORE_METRIC_WEIGHTS.
+      // Claude is still told the exact same formula so its free-text "rank" title (which IS
+      // generated in this call, alongside the metrics) lands on a tier consistent with what
+      // the app will separately calculate.
+      const weightPct = (name) => Math.round(SCORE_METRIC_WEIGHTS[name] * 100);
+      const scoringContext = `\n\nSCORING SYSTEM: Populate a "scoreCard" that gamifies performance without losing rigor. Score five metrics 0-100 — "Detection & Triage", "Containment & Eradication", "Communication & Escalation", "Playbook Adherence" (vs ${session.playbook.name}), and "Decision Quality Under Pressure". Base every score on the SUBSTANCE and correctness of the team's own decisions and answers in the discussion log — never on whether they asked for a hint or requested multiple-choice options; those are normal facilitation aids and must not lower a score just for being used. Do NOT include an "overallScore" field — the app computes that deterministically from your 5 metric scores using fixed weights: Playbook Adherence ${weightPct("Playbook Adherence")}%, Decision Quality Under Pressure ${weightPct("Decision Quality Under Pressure")}%, Detection & Triage ${weightPct("Detection & Triage")}%, Containment & Eradication ${weightPct("Containment & Eradication")}%, Communication & Escalation ${weightPct("Communication & Escalation")}%. Mentally apply that same weighted formula to the 5 scores you just assigned, and award a short, earned "rank" title matching the resulting tier (roughly: 90+ confident/expert-sounding, 75-89 solid, 55-74 developing, below 55 foundational — invent a title that fits THIS team's actual run rather than reusing a stock phrase every time), so your rank stays consistent with the score the app will calculate. Add one "scoringNote" sentence stating plainly the score reflects decision quality, not hint/option usage. Then, for every "playbookGaps" item, attach a "linkedMetric" naming exactly one of the five scoreCard metric names above, so each gap ties back to the score it affected.`;
       const resp = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -2706,14 +2749,29 @@ Playbook: ${session.playbook.name}
 Duration: ${fmt(duration)}
 Participants: ${session.participants.map(p => `${p.name || p.role} (${p.role})`).join(", ")}
 Facilitator tone: ${session.facilitatorConfig.tone}, difficulty: ${session.facilitatorConfig.difficulty}
-Discussion log: ${log || "(No discussion captured — generate a realistic template AAR.)"}${blendContext}${postExerciseContext}
+Discussion log: ${log || "(No discussion captured — generate a realistic template AAR.)"}${blendContext}${postExerciseContext}${scoringContext}
 
 Return this exact JSON shape with no other text:
 {
   "executiveSummary": "3-4 sentence paragraph summarizing the exercise and key outcomes",
+  "scoreCard": {
+    "rank": "short earned title reflecting this run",
+    "metrics": [
+      {"name": "Detection & Triage", "score": 80, "summary": "1 sentence grounded in the team's actual answers"},
+      {"name": "Containment & Eradication", "score": 80, "summary": "1 sentence"},
+      {"name": "Communication & Escalation", "score": 80, "summary": "1 sentence"},
+      {"name": "Playbook Adherence", "score": 80, "summary": "1 sentence"},
+      {"name": "Decision Quality Under Pressure", "score": 80, "summary": "1 sentence"}
+    ],
+    "scoringNote": "1 sentence noting this reflects decision quality, not hint/option usage"
+  },
   "wentWell": ["specific item", "specific item", "specific item"],
   "improvements": ["specific item", "specific item", "specific item"],
-  "playbookGaps": ["specific gap vs ${session.playbook.name}", "specific gap", "specific gap"],
+  "playbookGaps": [
+    {"gap": "specific gap vs ${session.playbook.name}", "linkedMetric": "one of the 5 scoreCard metric names above"},
+    {"gap": "specific gap", "linkedMetric": "..."},
+    {"gap": "specific gap", "linkedMetric": "..."}
+  ],
   "actionItems": [
     {"id": 1, "action": "specific action", "owner": "Role Title", "priority": "High"},
     {"id": 2, "action": "specific action", "owner": "Role Title", "priority": "Medium"},
@@ -2741,6 +2799,13 @@ Return this exact JSON shape with no other text:
 
       try {
         const parsed = JSON.parse(cleaned);
+        // Deterministic scoring: overallScore is never trusted from the model — it's always
+        // (re)computed here from parsed.scoreCard.metrics via SCORE_METRIC_WEIGHTS, so the
+        // same 5 metric scores always produce the exact same overall number, and any stray
+        // "overallScore" the model included anyway is overwritten rather than used.
+        if (parsed?.scoreCard?.metrics) {
+          parsed.scoreCard.overallScore = computeOverallScore(parsed.scoreCard.metrics) ?? 0;
+        }
         setAarData(parsed);
       } catch (parseErr) {
         // JSON parse failed — show the raw response so the user can see what came back
@@ -2767,6 +2832,23 @@ Return this exact JSON shape with no other text:
 
     const listItems = (arr, icon, color) =>
       (arr || []).map(item => `<div class="list-item" style="border-left-color:${color}"><span class="list-icon" style="color:${color}">${icon}</span>${item}</div>`).join("");
+
+    // Playbook Gaps now arrive as { gap, linkedMetric } objects (tying each gap back to the
+    // Score Card metric it dragged down) rather than plain strings — falls back to treating
+    // the item as a string if an older-shaped aarData is ever encountered.
+    const scoreColor = (n) => n >= 80 ? "#16a34a" : n >= 60 ? "#ca8a04" : "#dc2626";
+    const gapItems = (arr) =>
+      (arr || []).map(item => {
+        const text = typeof item === "string" ? item : (item.gap || "");
+        const metric = typeof item === "object" ? item.linkedMetric : null;
+        return `<div class="list-item" style="border-left-color:#dc2626"><span class="list-icon" style="color:#dc2626">⚠</span><span>${text}${metric ? ` <span class="gap-tag">↳ ${metric}</span>` : ""}</span></div>`;
+      }).join("");
+    const scoreMetricRows = (aarData?.scoreCard?.metrics || []).map(m => `
+      <div class="score-row">
+        <div class="score-row-top"><span class="score-row-name">${m.name}</span><span class="score-row-num" style="color:${scoreColor(m.score)}">${m.score}</span></div>
+        <div class="score-bar-track"><div class="score-bar-fill" style="width:${Math.max(0, Math.min(100, m.score))}%;background:${scoreColor(m.score)}"></div></div>
+        <div class="score-row-summary">${m.summary || ""}</div>
+      </div>`).join("");
 
     const actionRows = (aarData?.actionItems || []).map(item =>
       `<div class="action-row">
@@ -2812,6 +2894,19 @@ Return this exact JSON shape with no other text:
     .chip { display: inline-flex; align-items: center; gap: 5pt; padding: 3pt 10pt; border: 1px solid #e2e8f0; border-radius: 4pt; font-size: 9.5pt; background: #f8fafc; margin: 3pt; }
     .chip-role { color: #94a3b8; font-size: 8.5pt; }
     .chips { margin-top: 8pt; }
+    .score-head { display: flex; align-items: center; gap: 16pt; margin-bottom: 14pt; }
+    .score-ring { width: 52pt; height: 52pt; border-radius: 50%; border: 4pt solid #1e40af; display: flex; align-items: center; justify-content: center; font-size: 16pt; font-weight: 700; color: #1e40af; flex-shrink: 0; }
+    .score-rank-label { font-size: 8pt; color: #64748b; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 3pt; }
+    .score-rank { display: inline-block; padding: 3pt 10pt; border-radius: 10pt; background: #eff6ff; border: 1px solid #bfdbfe; color: #1e40af; font-size: 11pt; font-weight: 700; }
+    .score-row { margin-bottom: 10pt; }
+    .score-row-top { display: flex; justify-content: space-between; font-size: 10pt; margin-bottom: 3pt; }
+    .score-row-name { font-weight: 600; color: #1e293b; }
+    .score-row-num { font-weight: 700; }
+    .score-bar-track { height: 6pt; border-radius: 3pt; background: #e2e8f0; overflow: hidden; margin-bottom: 3pt; }
+    .score-bar-fill { height: 100%; border-radius: 3pt; }
+    .score-row-summary { font-size: 9pt; color: #475569; line-height: 1.4; }
+    .score-note { margin-top: 10pt; padding-top: 8pt; border-top: 1px solid #e2e8f0; font-size: 9pt; color: #64748b; font-style: italic; }
+    .gap-tag { display: inline-block; font-size: 8pt; color: #1e40af; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 3pt; padding: 1pt 6pt; margin-left: 4pt; }
     @media print {
       body { padding: 12pt 16pt; }
       .no-print { display: none; }
@@ -2842,6 +2937,20 @@ Return this exact JSON shape with no other text:
     <div class="summary">${aarData?.executiveSummary || ""}</div>
   </div>
 
+  ${aarData?.scoreCard ? `
+  <div class="section">
+    <div class="section-title">🎮 Score Card</div>
+    <div class="score-head">
+      <div class="score-ring">${aarData.scoreCard.overallScore}</div>
+      <div>
+        <div class="score-rank-label">Earned Rank</div>
+        <div class="score-rank">🏅 ${aarData.scoreCard.rank || ""}</div>
+      </div>
+    </div>
+    ${scoreMetricRows}
+    ${aarData.scoreCard.scoringNote ? `<div class="score-note">ℹ ${aarData.scoreCard.scoringNote}</div>` : ""}
+  </div>` : ""}
+
   ${aarData?.blendReveal ? `
   <div class="section" style="border-color:#c4b5fd;background:#faf5ff;">
     <div class="section-title" style="color:#7c3aed;">🧬 Blend Reveal — ${aarData.blendReveal.relation === "coordinated" ? "Coordinated Attack" : "Coincidental Overlap"}</div>
@@ -2861,7 +2970,7 @@ Return this exact JSON shape with no other text:
 
   <div class="section">
     <div class="section-title" style="color:#b91c1c;">⚠ Playbook Gaps — ${session.playbook.name}</div>
-    ${listItems(aarData?.playbookGaps, "⚠", "#b91c1c")}
+    ${gapItems(aarData?.playbookGaps)}
   </div>
 
   ${aarData?.postExerciseFeedback ? `
@@ -2899,6 +3008,7 @@ Return this exact JSON shape with no other text:
   };
 
   const priorityColor = { High: "#f87171", Medium: "#fbbf24", Low: "#4ade80" };
+  const scoreColor = (n) => n >= 80 ? "#4ade80" : n >= 60 ? "#fbbf24" : "#f87171";
 
   return (
     <>
@@ -2985,6 +3095,17 @@ Return this exact JSON shape with no other text:
               <div className="skeleton skeleton-line skeleton-line-full" />
               <div className="skeleton skeleton-line skeleton-line-med" />
             </div>
+            {/* Score Card skeleton */}
+            <div className="card">
+              <div className="skeleton skeleton-title" />
+              <div style={{ display: "flex", gap: 16, marginBottom: 14, alignItems: "center" }}>
+                <div className="skeleton" style={{ width: 74, height: 74, borderRadius: "50%" }} />
+                <div className="skeleton skeleton-block" style={{ width: 140, height: 26 }} />
+              </div>
+              {[100, 90, 95, 85, 80].map((w, i) => (
+                <div key={i} className="skeleton skeleton-block" style={{ width: `${w}%`, height: 10 }} />
+              ))}
+            </div>
             {/* Went Well / Improvements skeleton */}
             <div className="grid-2 gap-4">
               {[0, 1].map(col => (
@@ -3063,6 +3184,53 @@ Return this exact JSON shape with no other text:
               </div>
             </div>
 
+            {/* Score Card — gamified performance summary. Deliberately placed right after the
+                Executive Summary (the headline result) and BEFORE Went Well/Improvements, since
+                this plays a key role in the AAR per FEATURES.md §9. Each score is meant to be
+                grounded in the substance of the team's own decisions, not hint/option usage —
+                see scoringNote below and the linkedMetric tags on Playbook Gaps further down. */}
+            {aarData.scoreCard && (
+              <div className="aar-card card" style={{ border: "1px solid rgba(96,165,250,0.3)", background: "rgba(29,78,216,0.05)" }}>
+                <div className="aar-card-title card-title" style={{ color: "#60a5fa" }}>🎮 SCORE CARD</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 20, marginBottom: 18, flexWrap: "wrap" }}>
+                  <div style={{
+                    width: 74, height: 74, borderRadius: "50%", flexShrink: 0,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    border: `4px solid ${scoreColor(aarData.scoreCard.overallScore)}`,
+                    fontFamily: "'Share Tech Mono', monospace", fontSize: 22, fontWeight: 700,
+                    color: scoreColor(aarData.scoreCard.overallScore),
+                  }}>{aarData.scoreCard.overallScore}</div>
+                  <div>
+                    <div style={{ fontSize: 10, color: "#3a5a7a", fontFamily: "'Share Tech Mono', monospace", letterSpacing: ".08em", marginBottom: 4 }}>EARNED RANK</div>
+                    <div style={{
+                      display: "inline-block", padding: "4px 14px", borderRadius: 20,
+                      background: "rgba(96,165,250,0.15)", border: "1px solid rgba(96,165,250,0.4)",
+                      color: "#93c5fd", fontSize: 15, fontWeight: 700,
+                    }}>🏅 {aarData.scoreCard.rank}</div>
+                  </div>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                  {(aarData.scoreCard.metrics || []).map((m, i) => (
+                    <div key={i}>
+                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }}>
+                        <span style={{ color: "#c9d4e0", fontWeight: 600 }}>{m.name}</span>
+                        <span style={{ color: scoreColor(m.score), fontFamily: "'Share Tech Mono', monospace", fontWeight: 700 }}>{m.score}</span>
+                      </div>
+                      <div style={{ height: 7, borderRadius: 4, background: "#0a1520", overflow: "hidden", marginBottom: 4 }}>
+                        <div style={{ height: "100%", width: `${Math.max(0, Math.min(100, m.score))}%`, background: scoreColor(m.score), borderRadius: 4, transition: "width 0.6s ease" }} />
+                      </div>
+                      <div style={{ fontSize: 12, color: "#8aa5c0", lineHeight: 1.5 }}>{m.summary}</div>
+                    </div>
+                  ))}
+                </div>
+                {aarData.scoreCard.scoringNote && (
+                  <div style={{ marginTop: 14, fontSize: 11, color: "#3a5a7a", fontStyle: "italic", borderTop: "1px solid #1a2a3a", paddingTop: 10 }}>
+                    ℹ {aarData.scoreCard.scoringNote}
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Blend Reveal — Blended Incidents sessions only. This is the moment the
                 coordinated-vs-coincidental ground truth (never told to the team mid-exercise)
                 finally gets surfaced, alongside how well their own investigation tracked it. */}
@@ -3117,17 +3285,34 @@ Return this exact JSON shape with no other text:
             <div className="aar-card card">
               <div className="aar-card-title card-title" style={{ color: "#f87171" }}>⚠ PLAYBOOK GAPS — {session.playbook.name.toUpperCase()}</div>
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {(aarData.playbookGaps || []).map((item, i) => (
-                  <div key={i} className="aar-list-item" style={{
-                    padding: "8px 12px", borderRadius: 5,
-                    background: "rgba(220,38,38,0.05)", border: "1px solid rgba(220,38,38,0.2)",
-                    fontSize: 13, color: "#b0c4da", lineHeight: 1.55,
-                    display: "flex", gap: 8, alignItems: "flex-start"
-                  }}>
-                    <span style={{ color: "#f87171", flexShrink: 0, marginTop: 1 }}>⚠</span>
-                    <span>{item}</span>
-                  </div>
-                ))}
+                {(aarData.playbookGaps || []).map((item, i) => {
+                  // playbookGaps items are now { gap, linkedMetric } objects tying each gap
+                  // back to the Score Card metric it dragged down — fall back to treating the
+                  // item as a plain string if an older-shaped aarData is ever encountered.
+                  const gapText = typeof item === "string" ? item : item.gap;
+                  const linkedMetric = typeof item === "object" ? item.linkedMetric : null;
+                  return (
+                    <div key={i} className="aar-list-item" style={{
+                      padding: "8px 12px", borderRadius: 5,
+                      background: "rgba(220,38,38,0.05)", border: "1px solid rgba(220,38,38,0.2)",
+                      fontSize: 13, color: "#b0c4da", lineHeight: 1.55,
+                      display: "flex", gap: 8, alignItems: "flex-start"
+                    }}>
+                      <span style={{ color: "#f87171", flexShrink: 0, marginTop: 1 }}>⚠</span>
+                      <span>
+                        {gapText}
+                        {linkedMetric && (
+                          <span style={{
+                            marginLeft: 8, fontSize: 10, fontFamily: "'Share Tech Mono', monospace",
+                            color: "#60a5fa", background: "rgba(96,165,250,0.12)",
+                            border: "1px solid rgba(96,165,250,0.3)", borderRadius: 4, padding: "1px 6px",
+                            whiteSpace: "nowrap",
+                          }}>↳ {linkedMetric}</span>
+                        )}
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
             </div>
 
