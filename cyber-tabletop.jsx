@@ -18,17 +18,14 @@ const INDUSTRY_PLAYBOOKS = [
   },
   {
     id: "nist", name: "NIST SP 800-61", type: "industry",
-    description: "The NIST computer security incident handling guide, spanning live incident response, post-incident lessons learned, and ongoing preparation.",
-    // Only the Incident Response group is run live during the exercise — see `phases` below.
-    // Lessons Learned and Preparation are surfaced afterward, in the AAR, as feedback (see `aarPhases`).
-    // `phaseGroups` drives the grouped display on the playbook selection card only.
-    phaseGroups: [
-      { label: "Incident Response", phases: ["Detect", "Respond", "Recover"] },
-      { label: "Lessons Learned", phases: ["Lessons Learned"] },
-      { label: "Preparation", phases: ["Govern", "Identify", "Protect"] },
-    ],
+    description: "The NIST computer security incident handling guide, covering live incident response: detection, response, and recovery.",
+    // Live exercise phases: Detect → Respond → Recover. The closing lessons-learned review
+    // (formerly the "Identify Improvement" live phase) was removed — the After-Action Report
+    // already covers lessons learned and recommendations, so a live phase for it was redundant.
+    // `phaseGroups` was dropped with it (a lone "Incident Response" group is redundant), so
+    // NIST now uses the same flat phase-tag display as CISA. (Preparation / Govern-Identify-
+    // Protect was removed earlier — not surfaced live or in the AAR.)
     phases: ["Detect", "Respond", "Recover"],
-    aarPhases: ["Lessons Learned", "Govern", "Identify", "Protect"],
   },
 ];
 
@@ -175,25 +172,6 @@ function interpolateInject(inject, companyProfile) {
   return { ...inject, text };
 }
 
-// Turn-limit defaults per pace tier — used as the initial maxTurns value
-// and as the "reset to default" target for each tier.
-const PACE_TURN_DEFAULTS = { relaxed: 6, standard: 4, tight: 2 };
-
-// Time-limit defaults per pace tier (minutes) — same role as PACE_TURN_DEFAULTS,
-// but for "time limit per phase" mode.
-const PACE_TIME_DEFAULTS = { relaxed: 20, standard: 12, tight: 6 };
-
-// Resolves the effective per-phase time limit (minutes) for a given phase name,
-// honoring an optional per-phase override before falling back to the uniform value.
-// Returns null when time limiting isn't active in "per phase" mode. Per-phase overrides
-// are themselves gated behind their own toggle (off by default) — when that toggle is off,
-// any previously-entered override values are ignored (but preserved, in case re-enabled).
-function getPhaseTimeLimitMinutes(config, phaseName) {
-  if (!config.timeLimitEnabled || config.timeLimitScope !== "phase") return null;
-  const override = config.phaseOverridesEnabled ? config.phaseTimeOverrides?.[phaseName] : undefined;
-  return override > 0 ? override : config.maxMinutes;
-}
-
 // Default facilitator config
 const DEFAULT_FACILITATOR = {
   tone: "professional",        // professional | conversational | intense
@@ -201,16 +179,12 @@ const DEFAULT_FACILITATOR = {
   complexity: "standard",      // narrow | standard | branching — formerly "Pacing" (gentle/balanced/aggressive); renamed because the old name/values implied speed or severity, when the setting actually controls how much Claude volunteers beyond the direct consequence of a team action
   focusAreas: [],              // legal | technical | communications | executive
   customInstructions: "",
-  turnLimitEnabled: true,      // turn limit can now be switched off entirely
-  turnPace: "standard",        // relaxed | standard | tight — default turn cap per phase
-  maxTurns: PACE_TURN_DEFAULTS.standard, // editable; "reset to default" restores this from turnPace
-  timeLimitEnabled: false,     // time limit is opt-in
-  timeLimitScope: "scenario",  // "phase" | "scenario"
-  timePace: "standard",        // relaxed | standard | tight — default time cap per phase
-  maxMinutes: PACE_TIME_DEFAULTS.standard, // editable uniform per-phase minutes
-  phaseOverridesEnabled: false, // per-phase override list is off by default; overrides below only take effect when this is on
-  phaseTimeOverrides: {},      // optional per-phase minute overrides, keyed by phase name
-  maxScenarioMinutes: 60,      // whole-scenario time budget (only used when scope === "scenario")
+  // Phase advancement is now AI-driven (the facilitator classifies the phase each turn via a
+  // hidden [PHASE:] tag) — there is no turn limit and no per-phase time limit. The only
+  // remaining time control is an optional whole-scenario budget that warns the facilitator but
+  // never advances a phase or ends the exercise.
+  timeLimitEnabled: false,     // whole-scenario time budget is opt-in (facilitator warning only)
+  maxScenarioMinutes: 60,      // whole-scenario time budget in minutes (used only when timeLimitEnabled)
   showIncidentTags: false,    // Blended Incidents mode only — facilitator-controlled, togglable live mid-exercise;
                                // when on, each message/inject is labeled with which underlying scenario thread it
                                // belongs to. Off by default so the "figure it out yourselves" challenge is intact
@@ -223,9 +197,10 @@ const DEFAULT_FACILITATOR = {
 const LEGACY_COMPLEXITY_MAP = { gentle: "narrow", balanced: "standard", aggressive: "branching" };
 
 // Normalizes a possibly-stale saved facilitatorConfig into the current shape: fills in
-// any fields the saved session predates (turnLimitEnabled, timeLimitEnabled, etc. all
+// any fields the saved session predates (timeLimitEnabled, maxScenarioMinutes, etc. all
 // default correctly instead of coming back undefined), and migrates the renamed
-// "probing" field to "complexity" if present.
+// "probing" field to "complexity" if present. Note: legacy configs may still carry removed
+// fields (turnLimitEnabled, maxTurns, per-phase time settings) — these are simply ignored.
 function normalizeFacilitatorConfig(raw) {
   const config = { ...DEFAULT_FACILITATOR, ...raw };
   if (raw?.probing && !raw?.complexity) {
@@ -964,16 +939,6 @@ function FacilitatorSettings({ config, onChange, scenario, secondaryScenario, bl
     standard: { label: "⚖️ Standard", tip: <><strong>Standard</strong>Claude adds the one natural next development each response warrants, without stacking on unrelated complications. Default for most exercises.</> },
     branching: { label: "🌿 Branching", tip: <><strong>Branching</strong>Claude can layer an extra unprompted complication or time-pressure beat into its response, on top of the direct consequence of the team's action.</> },
   };
-  const TURN_PACE_INFO = {
-    relaxed: { label: "🐢 Relaxed", tip: <><strong>Relaxed (default: 6 turns)</strong>Gives the team more room to deliberate before the phase auto-advances. Good for newer teams or dense phases.</> },
-    standard: { label: "⏱️ Standard", tip: <><strong>Standard (default: 4 turns)</strong>Balanced pacing that fits most exercises — enough room to work a phase without stalling.</> },
-    tight: { label: "⚡ Tight", tip: <><strong>Tight (default: 2 turns)</strong>Forces rapid decisions. Best for experienced teams or time-boxed sessions.</> },
-  };
-  const TIME_PACE_INFO = {
-    relaxed: { label: "🐢 Relaxed", tip: <><strong>Relaxed (default: 20 min)</strong>Gives the team more real-world time per phase before auto-advancing. Good for newer teams or phases that need heavier deliberation.</> },
-    standard: { label: "⏱️ Standard", tip: <><strong>Standard (default: 12 min)</strong>Balanced pacing that fits most exercises — enough time to work a phase without stalling.</> },
-    tight: { label: "⚡ Tight", tip: <><strong>Tight (default: 6 min)</strong>Forces rapid, time-boxed decisions. Best for experienced teams or condensed sessions.</> },
-  };
   const FOCUS_TIPS = {
     "Technical": "Evaluates decisions around containment tooling, log analysis, forensic preservation, and technical IR procedures.",
     "Legal / Compliance": "Watches for regulatory notification timelines (GDPR, HIPAA, SEC), chain-of-custody requirements, and legal hold obligations.",
@@ -1058,172 +1023,31 @@ function FacilitatorSettings({ config, onChange, scenario, secondaryScenario, bl
 
       <div className="settings-section-header">
         Scenario Configuration
-        <span className="settings-section-sub">How and when a phase automatically advances</span>
+        <span className="settings-section-sub">Optional whole-exercise time budget (facilitator warning only)</span>
       </div>
 
-      {/* TURN LIMIT PER PHASE */}
+      {/* TIME LIMIT — whole-scenario budget only (warning-only; never advances phases or ends
+          the exercise). Phase advancement is AI-driven, so there is no turn limit and no
+          per-phase time limit here anymore. */}
       <div className="settings-row">
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
           <div style={{ display: "flex", alignItems: "center" }}>
-            <div className="settings-label" style={{ marginBottom: 0 }}>TURN LIMIT PER PHASE</div>
-            <Tooltip><strong>Turn Limit Per Phase</strong>Caps how many participant turns can occur before the phase automatically advances, so teams can't stall indefinitely in one phase. Each pace tier has a sensible default, which can be overridden. Can be combined with a time limit — whichever is reached first advances the phase.</Tooltip>
-          </div>
-          <Toggle checked={config.turnLimitEnabled} onChange={v => onChange({ ...config, turnLimitEnabled: v })} />
-        </div>
-        {config.turnLimitEnabled && (
-          <>
-            <div className="pill-group">
-              {Object.entries(TURN_PACE_INFO).map(([v, { label, tip }]) => (
-                <div key={v} style={{ display: "inline-flex", alignItems: "center" }}>
-                  <div className={`pill${config.turnPace === v ? " active" : ""}`}
-                    onClick={() => onChange({ ...config, turnPace: v, maxTurns: PACE_TURN_DEFAULTS[v] })}>{label}</div>
-                  <Tooltip>{tip}</Tooltip>
-                </div>
-              ))}
-            </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10, flexWrap: "wrap" }}>
-              <label style={{ margin: 0, fontSize: 12, color: "#7a9ab5" }}>Max turns before auto-advance:</label>
-              <input type="number" min={1} max={20} value={config.maxTurns}
-                onChange={e => onChange({ ...config, maxTurns: Math.min(20, Math.max(1, parseInt(e.target.value, 10) || 1)) })}
-                style={{ width: 64, textAlign: "center" }} />
-              {config.maxTurns !== PACE_TURN_DEFAULTS[config.turnPace] && (
-                <button className="btn btn-ghost btn-sm" onClick={() => onChange({ ...config, maxTurns: PACE_TURN_DEFAULTS[config.turnPace] })}>
-                  ↺ Reset to default ({PACE_TURN_DEFAULTS[config.turnPace]})
-                </button>
-              )}
-            </div>
-            <div style={{ marginTop: 6, fontSize: 11, color: "#2a4a6a" }}>
-              Default for {TURN_PACE_INFO[config.turnPace].label.replace(/^\S+\s/, "")}: {PACE_TURN_DEFAULTS[config.turnPace]} turns. Relaxed: 6 · Standard: 4 · Tight: 2. Custom values persist until reset.
-            </div>
-          </>
-        )}
-      </div>
-
-      {/* TIME LIMIT */}
-      <div className="settings-row">
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-          <div style={{ display: "flex", alignItems: "center" }}>
-            <div className="settings-label" style={{ marginBottom: 0 }}>TIME LIMIT</div>
-            <Tooltip><strong>Time Limit</strong>Caps how much real-world time participants get, either per phase or for the whole scenario. Can be combined with the turn limit — whichever is reached first advances the phase. The whole-scenario option only warns the facilitator; it never forces the exercise to end.</Tooltip>
+            <div className="settings-label" style={{ marginBottom: 0 }}>SCENARIO TIME BUDGET</div>
+            <Tooltip><strong>Scenario Time Budget</strong>An optional cap on total real-world time for the whole exercise. It only warns the facilitator when exceeded — it never advances a phase or ends the exercise. Phases advance automatically based on the AI facilitator's read of what the team is doing.</Tooltip>
           </div>
           <Toggle checked={config.timeLimitEnabled} onChange={v => onChange({ ...config, timeLimitEnabled: v })} />
         </div>
         {config.timeLimitEnabled && (
           <>
-            <div className="pill-group" style={{ marginBottom: 10 }}>
-              <div className={`pill${config.timeLimitScope === "scenario" ? " active" : ""}`}
-                onClick={() => onChange({ ...config, timeLimitScope: "scenario" })}>Entire Scenario</div>
-              <div className={`pill${config.timeLimitScope === "phase" ? " active" : ""}`}
-                onClick={() => onChange({ ...config, timeLimitScope: "phase" })}>Per Phase</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <label style={{ margin: 0, fontSize: 12, color: "#7a9ab5" }}>Total scenario time budget (minutes):</label>
+              <input type="number" min={5} max={480} value={config.maxScenarioMinutes}
+                onChange={e => onChange({ ...config, maxScenarioMinutes: Math.min(480, Math.max(5, parseInt(e.target.value, 10) || 5)) })}
+                style={{ width: 72, textAlign: "center" }} />
             </div>
-
-            {config.timeLimitScope === "phase" ? (
-              <>
-                <div className="pill-group">
-                  {Object.entries(TIME_PACE_INFO).map(([v, { label, tip }]) => (
-                    <div key={v} style={{ display: "inline-flex", alignItems: "center" }}>
-                      <div className={`pill${config.timePace === v ? " active" : ""}`}
-                        onClick={() => onChange({ ...config, timePace: v, maxMinutes: PACE_TIME_DEFAULTS[v] })}>{label}</div>
-                      <Tooltip>{tip}</Tooltip>
-                    </div>
-                  ))}
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10, flexWrap: "wrap" }}>
-                  <label style={{ margin: 0, fontSize: 12, color: "#7a9ab5" }}>Default minutes per phase before auto-advance:</label>
-                  <input type="number" min={1} max={120} value={config.maxMinutes}
-                    onChange={e => onChange({ ...config, maxMinutes: Math.min(120, Math.max(1, parseInt(e.target.value, 10) || 1)) })}
-                    style={{ width: 64, textAlign: "center" }} />
-                  {config.maxMinutes !== PACE_TIME_DEFAULTS[config.timePace] && (
-                    <button className="btn btn-ghost btn-sm" onClick={() => onChange({ ...config, maxMinutes: PACE_TIME_DEFAULTS[config.timePace] })}>
-                      ↺ Reset to default ({PACE_TIME_DEFAULTS[config.timePace]})
-                    </button>
-                  )}
-                </div>
-                <div style={{ marginTop: 6, fontSize: 11, color: "#2a4a6a" }}>
-                  Applies to every phase unless overridden below. Relaxed: 20 min · Standard: 12 min · Tight: 6 min.
-                </div>
-
-                {/* Optional per-phase overrides */}
-                <div style={{ marginTop: 14 }}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-                    <div style={{ fontSize: 11, color: "#7a9ab5" }}>
-                      Per-phase overrides <span style={{ color: "#2a4a6a" }}>(override the uniform default for individual phases)</span>
-                    </div>
-                    <Toggle checked={config.phaseOverridesEnabled} onChange={v => onChange({ ...config, phaseOverridesEnabled: v })} />
-                  </div>
-                  {config.phaseOverridesEnabled && (
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 24, paddingRight: 28 }}>
-                      {(playbook?.phases?.length ? playbook.phases : ["Preparation", "Detection & Analysis", "Containment", "Eradication", "Recovery", "Post-Incident"]).map((p, idx) => {
-                        const overridden = config.phaseTimeOverrides?.[p] !== undefined;
-                        return (
-                          <div key={p} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 5 }}>
-                            {/* Fixed min-height reserves room for a 2-line title, so short titles
-                                don't leave their input sitting higher than a neighbor's whose title
-                                wrapped — every input in a row stays aligned regardless of title length. */}
-                            <div style={{ display: "flex", alignItems: "flex-start", gap: 5, justifyContent: "center", width: "100%", minHeight: 32 }}>
-                              <span style={{ fontSize: 10, color: "#3a5a7a", fontFamily: "'Share Tech Mono', monospace", flexShrink: 0, lineHeight: 1.3 }}>{idx + 1}.</span>
-                              <label style={{ margin: 0, fontSize: 11, color: "#7a9ab5", textAlign: "center", lineHeight: 1.3, overflowWrap: "break-word", wordBreak: "break-word" }}>{p}</label>
-                            </div>
-                            {/* position:relative wrapper sized to the input alone, so the input
-                                (and the "min" label below it) stay centered under the title
-                                regardless of override state. The reset button is positioned
-                                absolutely off to the right — it never factors into this
-                                wrapper's width, so it can't pull the input off-center. */}
-                            <div style={{ position: "relative" }}>
-                              <input type="number" min={1} max={120}
-                                // Always show the effective value (override if set, otherwise the
-                                // uniform default) rather than leaving the field empty. This is what
-                                // actually fixes the spinner-starts-at-1 bug — the native step
-                                // buttons increment/decrement from whatever is displayed, so as long
-                                // as a real number is always shown, they naturally start from the
-                                // correct default instead of an empty field's implicit minimum.
-                                value={config.phaseTimeOverrides?.[p] ?? config.maxMinutes}
-                                onChange={e => {
-                                  // Only a genuine edit (typing a digit or clicking the spinner)
-                                  // reaches here — merely focusing the field fires no event at all,
-                                  // so tabbing through untouched rows commits nothing.
-                                  if (e.target.value === "") {
-                                    // Cleared entirely — revert this phase to the uniform default.
-                                    const next = { ...config.phaseTimeOverrides };
-                                    delete next[p];
-                                    onChange({ ...config, phaseTimeOverrides: next });
-                                    return;
-                                  }
-                                  const val = Math.min(120, Math.max(1, parseInt(e.target.value, 10) || 1));
-                                  onChange({ ...config, phaseTimeOverrides: { ...config.phaseTimeOverrides, [p]: val } });
-                                }}
-                                style={{ width: 68, textAlign: "center", color: overridden ? "#e5e7eb" : "#4a6a8a" }} />
-                              {overridden && (
-                                <button className="btn btn-ghost btn-sm" title="Revert to the default above"
-                                  style={{ position: "absolute", left: "100%", top: "50%", transform: "translateY(-50%)", marginLeft: 4, whiteSpace: "nowrap" }}
-                                  onClick={() => {
-                                    const next = { ...config.phaseTimeOverrides };
-                                    delete next[p];
-                                    onChange({ ...config, phaseTimeOverrides: next });
-                                  }}>↺</button>
-                              )}
-                            </div>
-                            <span style={{ fontSize: 10, color: "#2a4a6a" }}>min</span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              </>
-            ) : (
-              <>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                  <label style={{ margin: 0, fontSize: 12, color: "#7a9ab5" }}>Total scenario time budget (minutes):</label>
-                  <input type="number" min={5} max={480} value={config.maxScenarioMinutes}
-                    onChange={e => onChange({ ...config, maxScenarioMinutes: Math.min(480, Math.max(5, parseInt(e.target.value, 10) || 5)) })}
-                    style={{ width: 72, textAlign: "center" }} />
-                </div>
-                <div style={{ marginTop: 6, fontSize: 11, color: "#2a4a6a" }}>
-                  This budget is a facilitator-facing warning only — the exercise will flag when it's exceeded but will not end automatically or advance phases on its own.
-                </div>
-              </>
-            )}
+            <div style={{ marginTop: 6, fontSize: 11, color: "#2a4a6a" }}>
+              This budget is a facilitator-facing warning only — the exercise will flag when it's exceeded but will not end automatically or advance phases on its own.
+            </div>
           </>
         )}
       </div>
@@ -1332,36 +1156,13 @@ function buildSystemPrompt(config, scenario, playbook, phase, participants, turn
     ? `\n\nAdditional facilitator instructions:\n${config.customInstructions}`
     : "";
 
-  // displayTurn: the turn number about to be (or just was) used, clamped for display purposes.
-  const displayTurn = Math.max(1, Math.min(turnNumber, maxTurns));
-  let turnBudget = "";
-
-  if (!config.turnLimitEnabled) {
-    // Turn limit is off for this session — the phase may still auto-advance on a time
-    // limit, but that's handled entirely at the app level (it posts its own transition
-    // message rather than relying on AI narration), so there's nothing to tell the model.
-  } else {
-    turnBudget = `\n\nTURN BUDGET: This phase is capped at ${maxTurns} participant turn(s) (currently on turn ${displayTurn} of ${maxTurns}).`;
-
-    if (isLastPhase) {
-      // No further phase to transition into — don't reference auto-advance at all.
-      turnBudget += ` This is the final phase of the exercise, so there is no further phase to advance to — focus on helping the team reach a resolution.`;
-    } else if (nextPhase && turnNumber >= maxTurns) {
-      // FINAL TURN: the app will silently advance phaseIdx right after this response.
-      // The AI's own narration IS the transition — no separate app message will follow.
-      // IMPORTANT: at generation time the phase has NOT changed yet — this response is
-      // still, technically, the last response of the CURRENT phase. Frame the shift as
-      // imminent/in-progress, not as an already-completed fact, or it reads as premature.
-      turnBudget += ` This is the FINAL turn for this phase — the app will advance to the **${nextPhase}** phase immediately after this response, regardless of what you write. Do NOT close with a generic action-inviting question about the current phase. Instead: briefly resolve or acknowledge the team's last action in this phase, then narrate the team's focus turning toward ${nextPhase}. Because the team is being moved forward by having exhausted their available turns rather than by their own declared readiness, frame this pivot with a NEGATIVE, pressured undertone plausible for ${scenario.name} — e.g. a CEO or executive demanding visible progress, an operations lead saying the business cannot wait any longer, a regulator's clock ticking, mounting media attention, or another pressure that fits this scenario — rather than a calm, well-prepared handoff. Describe what's now coming into view or what new question the team must confront under that pressure, and end with a single action-inviting question suited to that pivot. Frame this as the team's attention SHIFTING TOWARD ${nextPhase}, not as though ${nextPhase} has already fully started — avoid declarative phrasing like "[Phase] begins now" or "[Phase] has begun"; this response is still closing out the current phase, even as it points toward what's next. Do not mention turn limits, caps, or the app's mechanics to the team; narrate the pivot purely as an in-world development, the way a real incident naturally evolves from one stage to the next.`;
-    } else if (nextPhase && turnNumber === maxTurns - 1) {
-      // TELEGRAPH: one turn remaining — begin steering toward a natural wrap-up so the
-      // eventual transition (next message) doesn't feel abrupt. Deliberately omit the next
-      // phase's name here so the model has no material to prematurely announce it early.
-      turnBudget += ` The team has one turn remaining in this phase before it naturally moves forward. Do not mention turn counts, limits, or name the upcoming phase yet — simply begin steering the scene toward wrapping up this phase's key objectives so the eventual transition feels earned rather than abrupt.`;
-    } else {
-      turnBudget += ` As the team approaches this limit, prioritize wrapping up. If the limit is reached, the app will auto-advance the phase regardless.`;
-    }
-  }
+  // PHASE TRACKING replaces the old turn-budget mechanics: there is no turn or time limit, and
+  // no manual/auto phase advance. The facilitator itself classifies the current phase each turn
+  // from the team's actions, emitting a hidden [PHASE:<name>] tag the app reads (see
+  // parsePhaseTag/applyPhaseFromText). The turnNumber/maxTurns/nextPhase/isLastPhase params are
+  // retained in the signature (callers still pass them) but no longer drive any prompt text.
+  const phaseList = (playbook.phases || []).length ? playbook.phases : [phase];
+  const phaseTracking = `\n\nPHASE TRACKING (required, technical/invisible to the team): This exercise follows the ${playbook.name} phases, in order: ${phaseList.join(" → ")}. There is NO turn or time limit — the phase is determined ENTIRELY by what the team is actually doing. Begin EVERY response (including the opening scene) with a single hidden tag on its own line, before any narrative text, in exactly this format: [PHASE:<exact phase name>], choosing the ONE phase from the list above that best matches the team's current actions and the state of the incident (e.g. isolating hosts / blocking attacker paths → the containment/respond phase; restoring from backups and validating service → the recovery phase; capturing what worked and turning findings into improvements → the lessons-learned phase). Use the phase name EXACTLY as written in the list. You MAY move the phase BACKWARD as well as forward if the situation warrants it (e.g. a newly discovered compromised host during recovery pulls the team back to responding). This tag is stripped by the app and never shown to the team — never mention phases, phase names, or this tagging to them, and do not narrate "we are now in the X phase."`;
 
   // mysteryBlock only ever applies to a genuinely solo Mystery Scenario session (no
   // secondaryScenario). When blended, ALL masking — whether one slot is a Mystery pick, or
@@ -1446,7 +1247,7 @@ MULTI-ROLE RESPONSES:
 
 Tone: ${toneMap[config.tone]}.
 Difficulty: ${diffMap[config.difficulty]}.
-Complexity: ${complexityMap[config.complexity]}.${focus}${custom}${turnBudget}${mysteryBlock}${rootCauseBlock}${companyBlock}${blendBlock}`;
+Complexity: ${complexityMap[config.complexity]}.${focus}${custom}${phaseTracking}${mysteryBlock}${rootCauseBlock}${companyBlock}${blendBlock}`;
 }
 
 // Format a set of simultaneous per-role responses into a single labeled block
@@ -2422,8 +2223,9 @@ function stripOptions(text) {
 }
 
 // Defensive strip in case a stray [ADVANCE_PHASE] marker leaks through — the model is no
-// longer instructed to emit it (the in-chat advance button was removed; only the app-driven
-// turn-limit auto-advance and the manual "Next Phase" button now change phases).
+// longer instructed to emit it. Phases now change from the model's own [PHASE:] tag on each
+// response (see parsePhaseTag / applyPhaseFromText); there is no turn/time auto-advance or
+// manual "Next Phase" button anymore.
 function stripAdvancePhase(text) { return text.replace(/\[ADVANCE_PHASE\]/gi, "").replace(/\n{3,}/g, "\n\n").trim(); }
 
 // Blended Incidents mode only: the facilitator prompt asks every response to open with a
@@ -2436,6 +2238,22 @@ function parseThreadTag(text) {
   return m ? m[1].toUpperCase() : null;
 }
 function stripThreadTag(text) { return (text || "").replace(/^\s*\[THREAD:(A|B|BOTH)\]/i, "").replace(/^\n+/, "").trim(); }
+
+// AI-driven phase tracking: with turn/time limits removed, the facilitator prompt asks every
+// response to open with a hidden [PHASE:<name>] marker naming the phase the team's current
+// actions place them in. parsePhaseTag maps it to an index in the playbook's phase list (exact
+// match first, then prefix, then substring, to tolerate light AI wording drift); stripPhaseTag
+// removes it before the text is ever shown — same never-leak contract as the markers above.
+function parsePhaseTag(text, phases) {
+  const m = /^\s*\[PHASE:\s*([^\]]+)\]/i.exec(text || "");
+  if (!m) return null;
+  const name = m[1].trim().toLowerCase();
+  let idx = phases.findIndex(p => p.toLowerCase() === name);
+  if (idx === -1) idx = phases.findIndex(p => p.toLowerCase().startsWith(name) || name.startsWith(p.toLowerCase()));
+  if (idx === -1) idx = phases.findIndex(p => p.toLowerCase().includes(name) || name.includes(p.toLowerCase()));
+  return idx === -1 ? null : idx;
+}
+function stripPhaseTag(text) { return (text || "").replace(/^\s*\[PHASE:[^\]]*\]/i, "").replace(/^\n+/, "").trim(); }
 
 // ── Multi-Role Response Round ─────────────────────────────────
 function MultiRoleInputPanel({ participants, onSubmit, onCancel, loading }) {
@@ -2516,9 +2334,9 @@ const MultiRoleMessageGroup = memo(function MultiRoleMessageGroup({ msg }) {
 // changes from before.
 const ChatMessage = memo(forwardRef(function ChatMessage({ msg, incidentTags }, ref) {
   const threadTag = msg.role === "ai" ? parseThreadTag(msg.text) : null;
-  // Strip [OPTION_X], [ADVANCE_PHASE], and [THREAD:X] markers from every AI message
+  // Strip [OPTION_X], [ADVANCE_PHASE], [THREAD:X], and [PHASE:X] markers from every AI message
   const displayText = msg.role === "ai"
-    ? stripThreadTag(stripAdvancePhase(stripOptions(msg.text)))
+    ? stripPhaseTag(stripThreadTag(stripAdvancePhase(stripOptions(msg.text))))
     : msg.text;
   const tagInfo = (incidentTags?.showIncidentTags && threadTag)
     ? threadTag === "A" ? (incidentTags.mysterySlot === "A" ? { icon: "🎲", name: "Mystery" } : { icon: incidentTags.primary?.icon, name: incidentTags.primary?.name })
@@ -3534,30 +3352,25 @@ function useChatStorage(session) {
     try {
       const raw = localStorage.getItem(key);
       if (!raw) return null;
-      return JSON.parse(raw); // { messages, timeline, phaseIdx, turnsInPhase, savedAt }
+      return JSON.parse(raw); // { messages, timeline, phaseIdx, scenarioElapsedSec, savedAt }
     } catch { return null; }
   };
 
   // `liveFacilitatorConfig` is passed in separately from `session` because the mid-exercise
   // Settings tab edits facilitatorConfig via its OWN React state in ExerciseView, not via
   // the `session` object (which is the immutable prop captured at setup/resume time and
-  // never changes again). Previously this function read `session?.facilitatorConfig`
-  // directly — the ORIGINAL, setup-time config — so any Time Limit change made mid-exercise
-  // (enabling it, changing pace/duration, toggling per-phase overrides) was silently never
-  // persisted: a refresh + resume would revert Time Limit settings to whatever they were at
-  // launch, which looked exactly like "the time limit resets." `companyProfile` is also now
-  // included — it's immutable for the life of a session (no mid-exercise edit path exists
-  // for it), so it's read from `session` same as sessionName/playbook/participants, but was
-  // previously missing from this payload entirely, silently dropping it on resume.
+  // never changes again). `companyProfile` is immutable for the life of a session (no
+  // mid-exercise edit path exists for it), so it's read from `session` directly.
   //
-  // `phaseRemainingSec`/`scenarioElapsedSec` (previously `phaseStartedAt`/`scenarioStartedAt`
-  // timestamps) are now plain durations — the exact remaining/elapsed seconds at save time —
-  // rather than a wall-clock start point to do math against on resume. This is what makes
-  // resuming freeze the clock while away instead of continuing to drain it in the background.
-  const save = (messages, timeline, phaseIdx, session, turnsInPhase, phaseRemainingSec, scenarioElapsedSec, liveFacilitatorConfig) => {
+  // `scenarioElapsedSec` is a plain duration — the exact elapsed seconds at save time — that
+  // only accrues while the exercise view is mounted, so resuming freezes the clock while away
+  // rather than continuing to drain it in the background. (Turn counts and per-phase time
+  // countdowns were removed when phase advancement became AI-driven, so they're no longer
+  // persisted; `phaseIdx` alone captures where the AI last placed the exercise.)
+  const save = (messages, timeline, phaseIdx, session, scenarioElapsedSec, liveFacilitatorConfig) => {
     try {
       localStorage.setItem(key, JSON.stringify({
-        messages, timeline, phaseIdx, turnsInPhase, phaseRemainingSec, scenarioElapsedSec,
+        messages, timeline, phaseIdx, scenarioElapsedSec,
         // Persist enough session metadata to reconstruct on resume
         sessionName: session?.sessionName,
         playbook: session?.playbook,
@@ -3577,7 +3390,7 @@ function useChatStorage(session) {
         try {
           const trimmed = messages.slice(-30);
           localStorage.setItem(key, JSON.stringify({
-            messages: trimmed, timeline, phaseIdx, turnsInPhase, phaseRemainingSec, scenarioElapsedSec,
+            messages: trimmed, timeline, phaseIdx, scenarioElapsedSec,
             sessionName: session?.sessionName,
             playbook: session?.playbook,
             participants: session?.participants,
@@ -3650,30 +3463,18 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
     : ["Preparation", "Detection & Analysis", "Containment", "Eradication", "Recovery", "Post-Incident"];
 
   const [phaseIdx, setPhaseIdx] = useState(0);
-  const [turnsInPhase, setTurnsInPhase] = useState(0);
-  // Time budgets are tracked as plain countdown/elapsed DURATIONS in state, not derived
-  // from a fixed start timestamp compared against wall-clock "now". With timestamp math,
-  // closing the browser — or simply sitting on the Resume/"Start New Exercise" selector
-  // screen deciding whether to continue — silently burned real minutes off every timer's
-  // budget, even though the team wasn't actually working the incident during that gap.
-  // Tracking duration directly means the countdown only ticks while THIS component is
-  // actually mounted (see the ticking effect below), freezing the instant the exercise view
-  // unmounts and resuming from exactly where it left off no matter how much real time
-  // passes in between — including time spent on the resume screen itself.
-  const [phaseRemainingSec, setPhaseRemainingSec] = useState(null); // null = no per-phase time limit active
+  // scenarioElapsedSec is tracked as a plain elapsed DURATION in state, not derived from a
+  // fixed start timestamp compared against wall-clock "now". With timestamp math, closing the
+  // browser — or simply sitting on the Resume/"Start New Exercise" selector screen deciding
+  // whether to continue — silently burned real minutes off the budget, even though the team
+  // wasn't actually working the incident. Tracking duration directly means it only accrues
+  // while THIS component is mounted (see the ticking effect below), freezing the instant the
+  // exercise view unmounts. It drives the Topbar's live timer, the AAR duration, and the
+  // optional whole-scenario budget warning. (Turn counts and per-phase countdowns were removed
+  // when phase advancement became AI-driven — see applyPhaseFromText.)
   const [scenarioElapsedSec, setScenarioElapsedSec] = useState(0);
-  // Tracks the phaseLimitMinutes value phaseRemainingSec was last reset for, so the
-  // mid-exercise-settings-change effect further below can tell a genuine change (a pace or
-  // duration edit, or the feature being toggled on/off from the Settings tab) apart from an
-  // unrelated re-render recomputing the same value. advancePhase() and the mount/resume
-  // effect both set phaseRemainingSec directly and keep this ref in sync themselves, so
-  // that change-detector effect doesn't immediately "see" a mismatch and redundantly reset
-  // what they just correctly set.
-  const lastPhaseLimitRef = useRef(null);
-  // Gates the change-detector effect until the mount/resume-restore effect's OWN state
-  // updates have actually committed and re-rendered. Without this, the detector would also
-  // run within that very first effect pass (same commit), see the pre-restore render's
-  // stale phaseIdx/phaseLimitMinutes, and immediately stomp the value just restored.
+  // Gates the onElapsedChange lift effect until the mount/resume-restore effect's OWN state
+  // updates have committed and re-rendered, so it never reports a transient pre-restore value.
   const initializedRef = useRef(false);
   // Wall-clock timestamp of the last tick, used only to compute the real delta *between
   // ticks* (normally ~1000ms) — never compared against a fixed "start" — so drift/throttling
@@ -3704,22 +3505,18 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
   const isLastPhase = phaseIdx >= phases.length - 1;
   const nextPhase = isLastPhase ? null : phases[phaseIdx + 1];
 
-  // Time-limit bookkeeping — phaseRemainingSec/scenarioElapsedSec are plain duration state
-  // (see declarations above and the ticking effect below), not derived from timestamps.
-  const phaseLimitMinutes = getPhaseTimeLimitMinutes(facilitatorConfig, currentPhase);
-  const scenarioLimitMinutes = facilitatorConfig.timeLimitEnabled && facilitatorConfig.timeLimitScope === "scenario"
+  // Whole-scenario time budget — the only time control left (warning-only; never advances a
+  // phase or ends the exercise). scenarioElapsedSec is plain duration state (see declaration
+  // and the ticking effect below), not derived from timestamps.
+  const scenarioLimitMinutes = facilitatorConfig.timeLimitEnabled
     ? facilitatorConfig.maxScenarioMinutes
     : null;
   const scenarioElapsedMinutes = scenarioElapsedSec / 60;
   const scenarioTimeExceeded = scenarioLimitMinutes != null && scenarioElapsedMinutes >= scenarioLimitMinutes;
-  // True once the exercise has reached its natural end point: the final phase has no
-  // further phase to auto-advance into, so once ITS OWN turn or time budget runs out,
-  // that's the same signal that would trigger auto-advance anywhere else — here it
-  // instead marks that the AI's most recent message is effectively the exercise's last.
-  const exerciseConcluded = isLastPhase && messages.length > 0 && (
-    (facilitatorConfig.turnLimitEnabled && turnsInPhase >= facilitatorConfig.maxTurns) ||
-    (phaseLimitMinutes != null && phaseRemainingSec <= 0)
-  );
+  // Phase advancement is now AI-driven and there is no automatic conclusion signal — the
+  // exercise ends only when the facilitator clicks "Complete Exercise ✓". So the in-chat
+  // "concluded" UI (disabled input, in-log Complete button) never engages; ending is manual.
+  const exerciseConcluded = false;
   const phaseGuidance = phases.map(p => PHASE_GUIDANCE[p] || "Work this phase according to your playbook's guidance.");
 
   const callClaude = async (msgs, system) => {
@@ -3733,11 +3530,11 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
 
   // Persist to localStorage after every message or phase change
   useEffect(() => {
-    if (messages.length > 0) storage.save(messages, timeline, phaseIdx, session, turnsInPhase, phaseRemainingSec, scenarioElapsedSec, facilitatorConfig);
-  }, [messages, timeline, phaseIdx, turnsInPhase, phaseRemainingSec, scenarioElapsedSec, facilitatorConfig]);
+    if (messages.length > 0) storage.save(messages, timeline, phaseIdx, session, scenarioElapsedSec, facilitatorConfig);
+  }, [messages, timeline, phaseIdx, scenarioElapsedSec, facilitatorConfig]);
 
-  // Live countdown/elapsed tick — decrements phaseRemainingSec and accumulates
-  // scenarioElapsedSec once per second, but ONLY while this component is mounted. Each tick
+  // Live elapsed tick — accumulates scenarioElapsedSec once per second, but ONLY while this
+  // component is mounted. Each tick
   // computes the real delta since the PREVIOUS tick (normally ~1000ms) rather than against
   // a fixed start time, so brief background-tab throttling is absorbed gracefully — and,
   // critically, no time at all accrues for any stretch where the component wasn't mounted
@@ -3747,7 +3544,6 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
       const now = Date.now();
       const deltaSec = (now - lastTickRef.current) / 1000;
       lastTickRef.current = now;
-      setPhaseRemainingSec(sec => (sec == null ? sec : Math.max(0, sec - deltaSec)));
       setScenarioElapsedSec(sec => sec + deltaSec);
     }, 1000);
     return () => clearInterval(id);
@@ -3759,24 +3555,11 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
       const r = session._resumeData;
       setMessages(r.messages || []);
       setTimeline(r.timeline || [{ label: "Session resumed", detail: scenarioLabel(session), time: new Date().toLocaleTimeString() }]);
-      const restoredPhaseIdx = r.phaseIdx || 0;
-      setPhaseIdx(restoredPhaseIdx);
-      setTurnsInPhase(r.turnsInPhase || 0);
-      const resolvedLimit = getPhaseTimeLimitMinutes(facilitatorConfig, phases[restoredPhaseIdx]);
-      lastPhaseLimitRef.current = resolvedLimit;
-      if (typeof r.phaseRemainingSec === "number") {
-        // Current format: the exact remaining duration, saved directly — resume picks up
-        // from precisely here regardless of how much real time passed while away.
-        setPhaseRemainingSec(r.phaseRemainingSec);
-      } else if (typeof r.phaseStartedAt === "number" && resolvedLimit != null) {
-        // Migrating a session saved before this duration-based rework existed (it only
-        // had a wall-clock start timestamp) — derive ONE last timestamp-based value here
-        // so the migration doesn't jump back to a full countdown, then switch entirely to
-        // duration-tracking (no more wall-clock math) from this point forward.
-        setPhaseRemainingSec(Math.max(0, resolvedLimit * 60 - (Date.now() - r.phaseStartedAt) / 1000));
-      } else {
-        setPhaseRemainingSec(resolvedLimit != null ? resolvedLimit * 60 : null);
-      }
+      // Clamp to the current phase list: a session saved on a phase that was later removed
+      // (e.g. NIST's old "Identify Improvement") would otherwise restore an out-of-range index.
+      setPhaseIdx(Math.min(r.phaseIdx || 0, phases.length - 1));
+      // scenarioElapsedSec restore: current format stores the exact elapsed duration; a
+      // pre-duration-rework session only had a wall-clock start timestamp, migrated once here.
       if (typeof r.scenarioElapsedSec === "number") {
         setScenarioElapsedSec(r.scenarioElapsedSec);
       } else if (typeof r.scenarioStartedAt === "number") {
@@ -3785,56 +3568,39 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
         setScenarioElapsedSec(0);
       }
     } else {
-      const resolvedLimit = getPhaseTimeLimitMinutes(facilitatorConfig, phases[0]);
-      lastPhaseLimitRef.current = resolvedLimit;
-      setPhaseRemainingSec(resolvedLimit != null ? resolvedLimit * 60 : null);
       initSession();
     }
     lastTickRef.current = Date.now();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Detects a mid-exercise Settings-tab edit that changes the EFFECTIVE per-phase time
-  // budget (enabling/disabling Time Limit, changing pace/duration, toggling per-phase
-  // overrides) and resets the countdown to the new full duration. Phase-to-phase resets are
-  // handled explicitly and deterministically inside advancePhase() itself, NOT here — this
-  // effect only needs to catch changes that happen mid-phase. Gated by initializedRef so it
-  // never fires before the mount/resume-restore effect's own state has actually committed
-  // (see initializedRef's declaration comment above for why that ordering matters).
-  useEffect(() => {
-    if (!initializedRef.current) return;
-    if (phaseLimitMinutes !== lastPhaseLimitRef.current) {
-      lastPhaseLimitRef.current = phaseLimitMinutes;
-      setPhaseRemainingSec(phaseLimitMinutes != null ? phaseLimitMinutes * 60 : null);
-    }
-  }, [phaseLimitMinutes]);
-
   // Lifts scenarioElapsedSec up to the parent (App), which uses it to drive the Topbar's
-  // live "total session time" display and the final duration recorded for the AAR. This
-  // reuses the SAME already-correct, already-persisted duration this component tracks for
-  // the Entire-Scenario time-limit feature — rather than introduce a third independent
-  // timer, which is exactly how the Topbar ended up with its own broken, un-persisted
-  // "time since mount" clock in the first place (see App's onElapsedChange usage and
-  // Topbar's props for the other half of this fix). Declared BEFORE the initializedRef flag
-  // effect below, and gated the same way as the change-detector effect above, so it never
-  // reports the transient pre-restore value of scenarioElapsedSec (0, or a stale value from
-  // before a resume) up to the parent — only the settled, correct value from the second
-  // commit onward.
+  // live "total session time" display and the final duration recorded for the AAR. Gated by
+  // initializedRef so it never reports the transient pre-restore value (0, or a stale value
+  // from before a resume) up to the parent — only the settled value from the second commit on.
   useEffect(() => {
     if (!initializedRef.current) return;
     onElapsedChange?.(scenarioElapsedSec);
   }, [scenarioElapsedSec]);
 
-  // Flips on AFTER the mount/resume-restore effect and the change-detector effect above
-  // have both run once on the initial commit — only from the NEXT commit onward (once the
-  // restored phaseIdx/config state has actually applied and phaseLimitMinutes recomputes
-  // against the correct values) does the change-detector start actively monitoring.
+  // Flips on AFTER the mount/resume-restore effect has run once on the initial commit, so the
+  // onElapsedChange lift above only starts reporting from the settled value onward.
   useEffect(() => {
     initializedRef.current = true;
   }, []);
 
-  const getSystemPrompt = (turnOverride) =>
-    buildSystemPrompt(facilitatorConfig, session.scenario, playbook, currentPhase, session.participants, turnOverride ?? turnsInPhase, facilitatorConfig.maxTurns, nextPhase, isLastPhase, session.usedRandomizer && !session.secondaryScenario, session.companyProfile, session.secondaryScenario, session.blendRelation, session.mysterySlot);
+  const getSystemPrompt = () =>
+    buildSystemPrompt(facilitatorConfig, session.scenario, playbook, currentPhase, session.participants, 0, 0, nextPhase, isLastPhase, session.usedRandomizer && !session.secondaryScenario, session.companyProfile, session.secondaryScenario, session.blendRelation, session.mysterySlot);
+
+  // AI-determined phase: read the [PHASE:] tag off each AI response and move the stepper to
+  // the phase the facilitator judged the team to be in. May move forward OR backward. Injects
+  // (app-authored) carry no tag, so they never shift the phase.
+  const applyPhaseFromText = (text) => {
+    const idx = parsePhaseTag(text, phases);
+    if (idx == null || idx === phaseIdx) return;
+    setPhaseIdx(idx);
+    setTimeline(prev => [...prev, { label: `Phase: ${phases[idx]}`, detail: "AI-assessed from scenario state", time: new Date().toLocaleTimeString() }]);
+  };
 
   const initSession = async () => {
     setLoading(true);
@@ -3862,6 +3628,7 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
         getSystemPrompt()
       );
       setMessages([{ role: "ai", text, time: new Date().toLocaleTimeString() }]);
+      applyPhaseFromText(text);
     } catch {
       const knownScenario = session.mysterySlot === "A" ? session.secondaryScenario : session.scenario;
       setMessages([{
@@ -3905,16 +3672,11 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
     setMessages(updatedMessages);
     setTimeline(prev => [...prev, { label: `${author} responded`, detail: userText.slice(0, 70) + (userText.length > 70 ? "…" : ""), time: new Date().toLocaleTimeString() }]);
     setLoading(true);
-    // Hint/options requests are meta requests, not responses to the scenario — they don't consume a turn
-    const turnCount = countsAsTurn ? turnsInPhase + 1 : turnsInPhase;
-    if (countsAsTurn) setTurnsInPhase(turnCount);
     try {
       const history = await buildApiHistory(updatedMessages);
-      const text = await callClaude(history, getSystemPrompt(turnCount));
+      const text = await callClaude(history, getSystemPrompt());
       setMessages(prev => [...prev, { role: "ai", text, time: new Date().toLocaleTimeString() }]);
-      if (facilitatorConfig.turnLimitEnabled && countsAsTurn && turnCount >= facilitatorConfig.maxTurns && phaseIdx < phases.length - 1) {
-        advancePhase(true, "turn");
-      }
+      applyPhaseFromText(text);
     } catch {
       setMessages(prev => [...prev, { role: "ai", text: "Error. Please try again.", time: new Date().toLocaleTimeString() }]);
     }
@@ -3943,15 +3705,11 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
       })),
     ]);
     setLoading(true);
-    const turnCount = turnsInPhase + 1;
-    setTurnsInPhase(turnCount);
     try {
       const history = await buildApiHistory(updatedMessages);
-      const text = await callClaude(history, getSystemPrompt(turnCount));
+      const text = await callClaude(history, getSystemPrompt());
       setMessages(prev => [...prev, { role: "ai", text, time: new Date().toLocaleTimeString() }]);
-      if (facilitatorConfig.turnLimitEnabled && turnCount >= facilitatorConfig.maxTurns && phaseIdx < phases.length - 1) {
-        advancePhase(true, "turn");
-      }
+      applyPhaseFromText(text);
     } catch {
       setMessages(prev => [...prev, { role: "ai", text: "Error. Please try again.", time: new Date().toLocaleTimeString() }]);
     }
@@ -3967,91 +3725,6 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
     setTab("discussion");
   };
 
-  const advancePhase = async (auto = false, reason = "turn") => {
-    if (phaseIdx >= phases.length - 1) return;
-    const outgoingPhase = currentPhase;
-    const next = phases[phaseIdx + 1];
-    setPhaseIdx(i => i + 1);
-    setTurnsInPhase(0);
-    // Deterministically give the new phase its own full time budget — computed here rather
-    // than left to the mid-exercise change-detector effect, since a phase change should
-    // ALWAYS reset to a fresh full duration regardless of whether the new phase happens to
-    // resolve to the same number of minutes as the old one (which the detector, watching
-    // only for a numeric-value change, would otherwise miss).
-    const nextLimit = getPhaseTimeLimitMinutes(facilitatorConfig, next);
-    lastPhaseLimitRef.current = nextLimit;
-    setPhaseRemainingSec(nextLimit != null ? nextLimit * 60 : null);
-    const reasonLabel = reason === "time" ? "time limit reached" : "turn limit reached";
-    setTimeline(prev => [...prev, {
-      label: auto ? `Phase auto-advanced: ${next} (${reasonLabel})` : `Phase: ${next}`,
-      time: new Date().toLocaleTimeString(),
-    }]);
-    // Turn-limit auto-advances rely on the facilitator's own final-turn response — generated
-    // per the FINAL TURN instruction in buildSystemPrompt, which now also carries the
-    // negative/pressured framing requested below — to have already narrated the shift, so no
-    // second message is posted here. Manual advances (button click) and time-limit
-    // auto-advances (which can fire with no in-flight AI response at all, if the team simply
-    // went quiet) both get a freshly AI-generated transition message, in two different tones:
-    // manual advances are framed positively (the team judged itself ready), time-limit
-    // advances are framed negatively/under pressure (moved forward by the clock, not choice).
-    if (auto && reason === "turn") return;
-
-    // Build a system prompt for the NEW phase directly, rather than via getSystemPrompt() —
-    // that helper reads currentPhase/nextPhase/isLastPhase from render-scope state, which
-    // won't reflect the setPhaseIdx() call above until the next render (stale closure).
-    const newPhaseIdx = phaseIdx + 1;
-    const newIsLastPhase = newPhaseIdx >= phases.length - 1;
-    const newNextPhase = newIsLastPhase ? null : phases[newPhaseIdx + 1];
-    const transitionSystemPrompt = buildSystemPrompt(
-      facilitatorConfig, session.scenario, playbook, next, session.participants,
-      0, facilitatorConfig.maxTurns, newNextPhase, newIsLastPhase, session.usedRandomizer && !session.secondaryScenario, session.companyProfile,
-      session.secondaryScenario, session.blendRelation, session.mysterySlot
-    );
-    const transitionInstruction = reason === "time"
-      ? `Time ran out for the ${outgoingPhase} phase before the team indicated they were ready to move on — the organization is being pushed into ${next} without full readiness. Write a short (2-4 sentence) transition message in flowing prose (no markdown headers, horizontal rules, or bullet lists) with a NEGATIVE, pressured tone plausible for ${session.scenario.name} — e.g. a CEO or executive demanding visible progress, an operations lead saying the business cannot wait any longer, a regulator's clock ticking, mounting media attention, or another pressure that fits this scenario. Narrate the shift into ${next} as forced by circumstance, not a deliberate, well-prepared choice. Base this strictly on what the team ACTUALLY did and observed during the ${outgoingPhase} phase, per the conversation above — do NOT invent confirmations, findings, or completed steps the team didn't actually establish. If it fits, it's fine (and often more accurate) to reference specifically what was left unresolved or unaddressed when time ran out, rather than inventing new unrelated events. Per CORE BEHAVIOR, do not explain what ${next} requires or what steps the team should take — just set the scene. Do not mention "time limit," "turn limit," or the app's mechanics directly — frame this purely as an in-world development. End with a single action-inviting line suited to ${next} that reflects the urgency.`
-      : `The team has determined they have what they need and is manually moving from the ${outgoingPhase} phase into ${next}. Write a short (2-4 sentence) transition message in flowing prose (no markdown headers, horizontal rules, or bullet lists) with a warranted, positive/confident tone. Base this strictly on what the team ACTUALLY did and found during the ${outgoingPhase} phase, per the conversation above — do NOT invent confirmations, findings, or completed steps the team didn't actually establish (e.g. do not claim contact lists were verified, thresholds were tuned, or anything else the team never did or mentioned). If a specific, true detail from their own actions supports a confident, forward-moving tone, reference it briefly and accurately; otherwise keep the positive framing general (e.g. "the team feels ready to move forward") rather than fabricating specifics. Per CORE BEHAVIOR, do not explain what ${next} requires or what steps the team should take — just set the scene for ${next}. End with a single action-inviting line suited to ${next}.`;
-    setLoading(true);
-    try {
-      const history = await buildApiHistory(messages);
-      const text = await callClaude([...history, { role: "user", content: transitionInstruction }], transitionSystemPrompt);
-      setMessages(prev => [...prev, { role: "ai", text, time: new Date().toLocaleTimeString() }]);
-    } catch {
-      setMessages(prev => [...prev, {
-        role: "ai",
-        text: reason === "time"
-          ? `Time has run out for ${outgoingPhase}. Whether the team is ready or not, the situation is moving into the **${next}** phase. What is your team's next action?`
-          : `Moving into the **${next}** phase. What are your team's priorities and immediate actions at this stage?`,
-        time: new Date().toLocaleTimeString(),
-      }]);
-    }
-    setLoading(false);
-  };
-
-  // Time-limit auto-advance — checked on every clock tick (not just on message send),
-  // since a phase's time budget can run out while the team hasn't sent anything at all.
-  // phaseRemainingSec itself now updates once per second via the ticking effect above, so
-  // it alone is sufficient to re-run this check every tick — no separate "now" dependency
-  // is needed the way the old timestamp-based version required.
-  useEffect(() => {
-    if (phaseLimitMinutes == null) return;
-    if (isLastPhase) return;
-    if (loading) return;
-    // phaseRemainingSec starts as `null` and is only set to a real number by the
-    // mount/resume-restore effect's OWN state update — which, on the very first render,
-    // hasn't been committed yet (effects run in declaration order within the same commit,
-    // but a setState call doesn't retroactively change what a LATER effect in that same
-    // pass reads from its closure). Without this guard, `null > 0` evaluates to `false` in
-    // JS, so the check below would treat "not yet initialized" as "already expired" and
-    // fire an incorrect auto-advance on mount for ANY new or resumed session with a
-    // Per-Phase Time Limit active — this was a real regression: it advanced new sessions
-    // past their starting phase, and resumed sessions past whatever phase they were
-    // actually restored to, before the real countdown value even existed yet.
-    if (phaseRemainingSec == null) return;
-    if (phaseRemainingSec > 0) return;
-    advancePhase(true, "time");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phaseLimitMinutes, isLastPhase, loading, phaseRemainingSec]);
-
   return (
     <>
       <div className="exercise-subheader">
@@ -4066,38 +3739,14 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
             style={{ margin: "8px 6px 8px 0", color: "#f87171", borderColor: "rgba(220,38,38,0.3)" }}
             onClick={() => setConfirmModal("end-early")}
           >✕ End Early</button>
-          {/* Next Phase / Complete */}
-          {phaseIdx < phases.length - 1
-            ? <button className="btn btn-ghost btn-sm" style={{ margin: "8px 0" }} disabled={loading} onClick={() => advancePhase(false)}>{loading ? "Advancing…" : "Next Phase →"}</button>
-            : <button className="btn btn-success btn-sm" style={{ margin: "8px 0" }} onClick={() => setConfirmModal("complete")}>Complete Exercise ✓</button>}
+          {/* Complete Exercise — always available; phases advance automatically as the AI
+              reads the scenario state, so there is no manual "Next Phase" control. */}
+          <button className="btn btn-success btn-sm" style={{ margin: "8px 0" }} onClick={() => setConfirmModal("complete")}>Complete Exercise ✓</button>
         </div>
         <div style={{ padding: "10px 24px 12px", background: "#0a0f18" }}>
-          {(facilitatorConfig.turnLimitEnabled || phaseLimitMinutes != null) && (
-            // justify-content: space-between puts the turn counter on the left and the
-            // phase countdown on the right when both are active. When only one is active,
-            // space-between with a single child naturally collapses to the left edge, so
-            // no separate single-item layout branch is needed.
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 8 }}>
-              {facilitatorConfig.turnLimitEnabled && (
-                <div style={{ fontSize: 11, color: turnsInPhase >= facilitatorConfig.maxTurns - 1 ? "#f87171" : "#4a6a8a", fontFamily: "'Share Tech Mono', monospace" }}>
-                  Turn {Math.min(turnsInPhase + (phaseIdx < phases.length - 1 ? 1 : 0), facilitatorConfig.maxTurns)} of {facilitatorConfig.maxTurns} this phase
-                </div>
-              )}
-              {/* Also requires phaseRemainingSec != null — it starts null for one render
-                  until the mount/resume-restore effect's own state update commits, and
-                  without this guard that transient null would flash "00:00" in red (null
-                  coerces to 0 in both the <= comparison and Math.floor) for a frame. */}
-              {phaseLimitMinutes != null && phaseRemainingSec != null && (
-                <div style={{ fontSize: 11, color: phaseRemainingSec <= 60 ? "#f87171" : "#4a6a8a", fontFamily: "'Share Tech Mono', monospace" }}>
-                  {/* phaseRemainingSec is a float (accumulated via real per-tick deltas, not whole
-                      seconds) — floor the whole value first so both the minutes and the seconds
-                      remainder are clean integers, rather than flooring only the minutes half and
-                      leaving a fractional remainder like "59.976" in the seconds position. */}
-                  ⏳ {String(Math.floor(Math.floor(phaseRemainingSec) / 60)).padStart(2, "0")}:{String(Math.floor(phaseRemainingSec) % 60).padStart(2, "0")} remaining this phase
-                </div>
-              )}
-            </div>
-          )}
+          <div style={{ fontSize: 11, color: "#4a6a8a", fontFamily: "'Share Tech Mono', monospace", marginBottom: 8 }}>
+            ⟳ Phase tracked automatically from your team's actions
+          </div>
           {scenarioTimeExceeded && (
             <div style={{ fontSize: 11, color: "#f87171", fontFamily: "'Share Tech Mono', monospace", marginBottom: 8 }}>
               ⚠ Scenario time budget ({scenarioLimitMinutes} min) exceeded — wrap up when ready; the app will not end this automatically
@@ -4120,7 +3769,11 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
 
       <div className="main" style={{ paddingBottom: 60 }}>
         {tab === "discussion" && (
-          <div className="grid-2 gap-4">
+          // 70/30 split (chat left, context sidebar right) via fr units, which respect the
+          // 16px gap cleanly — overrides .grid-2's default 1fr 1fr for this tab only, so the
+          // team's input area gets the majority of the width and the Injects tab (also .grid-2)
+          // keeps its even split.
+          <div className="grid-2 gap-4" style={{ gridTemplateColumns: "7fr 3fr" }}>
             <AIChat
               scenario={session.scenario}
               secondaryScenario={session.secondaryScenario}
