@@ -2724,6 +2724,11 @@ function AARView({ session, timeline, messages, duration, onNewScenario }) {
       // Instructs the model to describe only what appears in the discussion log and to reuse
       // the given Duration figure exactly as provided, in the same units.
       const groundingContext = `\n\nGROUNDING RULES (must follow strictly): This report must describe ONLY what is actually present in the discussion log above — never invent, imply, or assume actions, decisions, or discussion that were not explicitly stated. If the log is empty, or a phase/category has no corresponding entries, say so plainly (e.g. "No containment actions were discussed or taken during this session") instead of describing hypothetical, typical, or "realistic template" behavior. Use the Duration value given above EXACTLY as written — same figure, same units — anywhere duration is mentioned (e.g. the executive summary); do not round it, convert it, or restate it differently. Log entries marked "(facilitation request, not a decision)" are the team asking for a hint or for multiple-choice options — these are NOT team responses, actions, or decisions: never count them toward, or describe them as, the number of responses/actions the team took. When describing a decision made by selecting a lettered option, describe the substance of what was chosen, not its letter (e.g. describe the action itself rather than writing "selected option B"). If the exercise was ended early with minimal or no discussion, state that plainly and briefly (e.g. "The exercise was ended early after minimal discussion.") rather than elaborating at length on the sparse content available.`;
+      // Targets a specific failure mode where "wentWell" filled empty slots with meta/
+      // procedural facts about the exercise's own setup or wrap-up (e.g. "the exercise was
+      // successfully launched," "a report was generated") rather than genuine team actions —
+      // padding that reads as content but isn't feedback on anything the team actually did.
+      const wentWellContext = `\n\nWENT-WELL RULES: The "wentWell" array may ONLY contain things the team themselves did or decided well during the exercise — real actions, decisions, or communications drawn from the discussion log. Never include administrative, procedural, or app-driven facts about the exercise itself (e.g. that a scenario/playbook was selected, that the session was launched, that a blended or mystery scenario was "prepared," or that the exercise was formally closed and a report generated) — none of that is something the team did. If the discussion log has too little team activity to support any genuine item, return an empty array rather than filling it with unrelated or procedural filler.`;
       const resp = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -2737,7 +2742,7 @@ Playbook: ${session.playbook.name}
 Duration: ${fmt(duration)}
 Participants: ${session.participants.map(p => `${p.name || p.role} (${p.role})`).join(", ")}
 Facilitator tone: ${session.facilitatorConfig.tone}, difficulty: ${session.facilitatorConfig.difficulty}
-Discussion log: ${log || "(No discussion was captured. No participant actions, decisions, or messages were recorded during this session — the report must state this plainly rather than inventing a plausible-sounding run.)"}${blendContext}${postExerciseContext}${groundingContext}${scoringContext}
+Discussion log: ${log || "(No discussion was captured. No participant actions, decisions, or messages were recorded during this session — the report must state this plainly rather than inventing a plausible-sounding run.)"}${blendContext}${postExerciseContext}${groundingContext}${wentWellContext}${scoringContext}
 
 Return this exact JSON shape with no other text:
 {
@@ -2753,7 +2758,7 @@ Return this exact JSON shape with no other text:
     ],
     "scoringNote": "1 sentence noting this reflects decision quality, not hint/option usage"
   },
-  "wentWell": ["specific item", "specific item", "specific item"],
+  "wentWell": ["specific item — or an empty array if nothing genuine qualifies"],
   "improvements": ["specific item", "specific item", "specific item"],
   "playbookGaps": [
     {"gap": "specific gap vs ${session.playbook.name}", "linkedMetric": "one of the 5 scoreCard metric names above"},
@@ -3075,6 +3080,12 @@ Return this exact JSON shape with no other text:
         {/* Skeleton loading state */}
         {loading && (
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            {/* Status message — placed at the top of the loading state so participants see it
+                immediately without needing to scroll past the skeleton cards below. */}
+            <div style={{ textAlign: "center", padding: "8px 0 16px", fontSize: 12, color: "#3a5a7a", fontFamily: "'Share Tech Mono', monospace" }}>
+              <span className="spinner" style={{ verticalAlign: "middle", marginRight: 8 }} />
+              Claude is analysing your session and writing the report…
+            </div>
             {/* Executive Summary skeleton */}
             <div className="card">
               <div className="skeleton skeleton-title" />
@@ -3138,11 +3149,6 @@ Return this exact JSON shape with no other text:
               {[100, 85, 75].map((w, i) => (
                 <div key={i} className="skeleton skeleton-line" style={{ width: `${w}%` }} />
               ))}
-            </div>
-            {/* Status message */}
-            <div style={{ textAlign: "center", padding: "8px 0 16px", fontSize: 12, color: "#3a5a7a", fontFamily: "'Share Tech Mono', monospace" }}>
-              <span className="spinner" style={{ verticalAlign: "middle", marginRight: 8 }} />
-              Claude is analysing your session and writing the report…
             </div>
           </div>
         )}
@@ -3238,7 +3244,7 @@ Return this exact JSON shape with no other text:
               <div className="aar-card card">
                 <div className="aar-card-title card-title" style={{ color: "#22c55e" }}>✓ WHAT WENT WELL</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  {(aarData.wentWell || []).map((item, i) => (
+                  {aarData.wentWell?.length ? aarData.wentWell.map((item, i) => (
                     <div key={i} className="aar-list-item" style={{
                       padding: "8px 12px", borderRadius: 5,
                       background: "rgba(22,163,74,0.06)", border: "1px solid rgba(22,163,74,0.2)",
@@ -3248,7 +3254,11 @@ Return this exact JSON shape with no other text:
                       <span style={{ color: "#22c55e", flexShrink: 0, marginTop: 1 }}>✓</span>
                       <span>{item}</span>
                     </div>
-                  ))}
+                  )) : (
+                    <div style={{ fontSize: 13, color: "#4a6a8a", fontStyle: "italic" }}>
+                      No specific team actions to highlight for this session.
+                    </div>
+                  )}
                 </div>
               </div>
               <div className="aar-card card">
@@ -3478,6 +3488,18 @@ const scenarioIcons = (session) => session.secondaryScenario
   ? `${session.scenario.icon}${session.secondaryScenario.icon}`
   : session.scenario.icon;
 
+// Participant-facing scenario label for use DURING the live exercise (e.g. Timeline tab
+// entries) — unlike scenarioLabel (used post-exercise in the AAR, where the identity is
+// deliberately revealed), this respects the same Mystery masking already applied to the
+// chat header and inject tags: a solo Mystery Scenario pick is fully masked, and in a
+// Blended session, only whichever slot is the Mystery pick (mysterySlot) is masked while
+// the other scenario's real name still shows normally.
+const liveScenarioLabel = (session) => session.usedRandomizer && !session.secondaryScenario
+  ? "Mystery Scenario"
+  : session.secondaryScenario
+  ? `${session.mysterySlot === "A" ? "Mystery Scenario" : session.scenario.name} + ${session.mysterySlot === "B" ? "Mystery Scenario" : session.secondaryScenario.name}`
+  : session.scenario.name;
+
 const storageKey = (session) =>
   `tactician:${session.sessionName}:${session.scenario.id}${session.secondaryScenario ? `+${session.secondaryScenario.id}` : ""}`.replace(/\s+/g, "_").slice(0, 120);
 
@@ -3654,7 +3676,7 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
   // elapsed while this component wasn't mounted at all.
   const lastTickRef = useRef(Date.now());
   const [messages, setMessages] = useState([]);
-  const [timeline, setTimeline] = useState([{ label: "Exercise started", detail: `${scenarioLabel(session)} · ${playbook.name}`, time: new Date().toLocaleTimeString() }]);
+  const [timeline, setTimeline] = useState([{ label: "Exercise started", detail: `${liveScenarioLabel(session)} · ${playbook.name}`, time: new Date().toLocaleTimeString() }]);
   const [loading, setLoading] = useState(false);
   const [tab, setTab] = useState("discussion");
   const [facilitatorConfig, setFacilitatorConfig] = useState(session.facilitatorConfig);
@@ -3726,7 +3748,7 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
     if (session._resumeData) {
       const r = session._resumeData;
       setMessages(r.messages || []);
-      setTimeline(r.timeline || [{ label: "Session resumed", detail: scenarioLabel(session), time: new Date().toLocaleTimeString() }]);
+      setTimeline(r.timeline || [{ label: "Session resumed", detail: liveScenarioLabel(session), time: new Date().toLocaleTimeString() }]);
       // Clamp to the current phase list: a saved session referencing a phase index outside
       // the current playbook's phase list would otherwise restore an out-of-range index.
       setPhaseIdx(Math.min(r.phaseIdx || 0, phases.length - 1));
