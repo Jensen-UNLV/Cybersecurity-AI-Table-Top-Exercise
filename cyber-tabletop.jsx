@@ -19,12 +19,9 @@ const INDUSTRY_PLAYBOOKS = [
   {
     id: "nist", name: "NIST SP 800-61", type: "industry",
     description: "The NIST computer security incident handling guide, covering live incident response: detection, response, and recovery.",
-    // Live exercise phases: Detect → Respond → Recover. The closing lessons-learned review
-    // (formerly the "Identify Improvement" live phase) was removed — the After-Action Report
-    // already covers lessons learned and recommendations, so a live phase for it was redundant.
-    // `phaseGroups` was dropped with it (a lone "Incident Response" group is redundant), so
-    // NIST now uses the same flat phase-tag display as CISA. (Preparation / Govern-Identify-
-    // Protect was removed earlier — not surfaced live or in the AAR.)
+    // Live exercise phases: Detect → Respond → Recover. Post-exercise lessons learned and
+    // recommendations are covered by the After-Action Report, not a separate live phase.
+    // Uses the same flat phase-tag display as CISA (no `phaseGroups`).
     phases: ["Detect", "Respond", "Recover"],
   },
 ];
@@ -208,13 +205,13 @@ function interpolateInject(inject, companyProfile) {
 const DEFAULT_FACILITATOR = {
   tone: "professional",        // professional | conversational | intense
   difficulty: "moderate",      // light | moderate | rigorous
-  complexity: "standard",      // narrow | standard | branching — formerly "Pacing" (gentle/balanced/aggressive); renamed because the old name/values implied speed or severity, when the setting actually controls how much Claude volunteers beyond the direct consequence of a team action
+  complexity: "standard",      // narrow | standard | branching — controls how much Claude volunteers beyond the direct consequence of a team action
   focusAreas: [],              // legal | technical | communications | executive
   customInstructions: "",
-  // Phase advancement is now AI-driven (the facilitator classifies the phase each turn via a
+  // Phase advancement is AI-driven (the facilitator classifies the phase each turn via a
   // hidden [PHASE:] tag) — there is no turn limit and no per-phase time limit. The only
-  // remaining time control is an optional whole-scenario budget that warns the facilitator but
-  // never advances a phase or ends the exercise.
+  // time control is an optional whole-scenario budget that warns the facilitator but never
+  // advances a phase or ends the exercise.
   timeLimitEnabled: false,     // whole-scenario time budget is opt-in (facilitator warning only)
   maxScenarioMinutes: 60,      // whole-scenario time budget in minutes (used only when timeLimitEnabled)
   showIncidentTags: false,    // Blended Incidents mode only — facilitator-controlled, togglable live mid-exercise;
@@ -223,9 +220,9 @@ const DEFAULT_FACILITATOR = {
                                // unless the facilitator deliberately chooses to make threads visible.
 };
 
-// Maps the old "probing" field's values (gentle/balanced/aggressive) to the renamed
+// Maps a legacy "probing" field's values (gentle/balanced/aggressive) to the current
 // "complexity" field's values (narrow/standard/branching), for sessions saved to
-// localStorage before this rename shipped.
+// localStorage under the previous field name.
 const LEGACY_COMPLEXITY_MAP = { gentle: "narrow", balanced: "standard", aggressive: "branching" };
 
 // Normalizes a possibly-stale saved facilitatorConfig into the current shape: fills in
@@ -769,12 +766,9 @@ const FontStyle = () => (
 
 // ── Topbar ────────────────────────────────────────────────────
 function Topbar({ sessionName, stopped, finalDuration, elapsed }) {
-  // No internal timer here anymore — `elapsed` is passed in live from App, which itself
-  // just mirrors ExerciseView's scenarioElapsedSec (see App's `elapsedSec` state and
-  // ExerciseView's `onElapsedChange`). Previously this component ran its OWN independent
-  // `setInterval` seeded from `Date.now()` on every mount/sessionName change, which reset to
-  // 00:00:00 on every resume — the exact same un-persisted-timestamp bug already fixed for
-  // the phase/scenario countdowns, just hiding in a second, totally separate clock.
+  // `elapsed` is passed in live from App, which mirrors ExerciseView's scenarioElapsedSec
+  // (see App's `elapsedSec` state and ExerciseView's `onElapsedChange`) — Topbar has no
+  // timer of its own, so it stays in sync across mounts, resumes, and sessionName changes.
   const displayTime = stopped ? finalDuration : elapsed;
   // Floor first, then split into h/m/s — `elapsed` is a float (fractional-second deltas
   // accumulate in ExerciseView's ticking effect), so flooring only after the `% 60` would
@@ -1188,11 +1182,11 @@ function buildSystemPrompt(config, scenario, playbook, phase, participants, turn
     ? `\n\nAdditional facilitator instructions:\n${config.customInstructions}`
     : "";
 
-  // PHASE TRACKING replaces the old turn-budget mechanics: there is no turn or time limit, and
-  // no manual/auto phase advance. The facilitator itself classifies the current phase each turn
-  // from the team's actions, emitting a hidden [PHASE:<name>] tag the app reads (see
-  // parsePhaseTag/applyPhaseFromText). The turnNumber/maxTurns/nextPhase/isLastPhase params are
-  // retained in the signature (callers still pass them) but no longer drive any prompt text.
+  // Phase advancement is fully AI-driven: there is no turn or time limit, and no manual/auto
+  // phase advance. The facilitator classifies the current phase each turn from the team's
+  // actions, emitting a hidden [PHASE:<name>] tag the app reads (see parsePhaseTag/
+  // applyPhaseFromText). The turnNumber/maxTurns/nextPhase/isLastPhase params are accepted
+  // for signature compatibility with callers but do not affect the generated prompt.
   const phaseList = (playbook.phases || []).length ? playbook.phases : [phase];
   const phaseTracking = `\n\nPHASE TRACKING (required, technical/invisible to the team): This exercise follows the ${playbook.name} phases, in order: ${phaseList.join(" → ")}. There is NO turn or time limit — the phase is determined ENTIRELY by what the team is actually doing. Begin EVERY response (including the opening scene) with a single hidden tag on its own line, before any narrative text, in exactly this format: [PHASE:<exact phase name>], choosing the ONE phase from the list above that best matches the team's current actions and the state of the incident (e.g. isolating hosts / blocking attacker paths → the containment/respond phase; restoring from backups and validating service → the recovery phase; capturing what worked and turning findings into improvements → the lessons-learned phase). Use the phase name EXACTLY as written in the list. You MAY move the phase BACKWARD as well as forward if the situation warrants it (e.g. a newly discovered compromised host during recovery pulls the team back to responding). This tag is stripped by the app and never shown to the team — never mention phases, phase names, or this tagging to them, and do not narrate "we are now in the X phase."`;
 
@@ -2241,23 +2235,19 @@ function stripOptions(text) {
   return text
     .replace(/\[OPTION_[A-D]\].+/g, "")
     // Catches stray "A. ...", "A: ...", "A) ..." multiple-choice-style lines the model
-    // sometimes writes without the [OPTION_X] bracket format. FIXED regression: the
-    // delimiter class used to include a bare `\s`, so any ordinary sentence starting with
-    // the word "A " (the indefinite article — extremely common in prose, e.g. "A wave of
-    // complaints...", "A separate incident...") was being deleted as if it were "option A."
-    // Blended Incident openings surfaced this far more than single-scenario ones because
-    // they're more likely to open a sentence that way. Real MC-style lines always use actual
-    // punctuation after the letter, so the fix requires one of . ) : rather than any
-    // whitespace, and requires at least one space before the option text.
+    // sometimes writes without the [OPTION_X] bracket format. Requires real punctuation
+    // (. ) or :) directly after the letter and at least one space before the option text,
+    // so an ordinary sentence starting with the indefinite article "A " (e.g. "A wave of
+    // complaints...", "A separate incident...") is not affected.
     .replace(/^[A-D][.):]\s+.{10,}/gm, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
 
-// Defensive strip in case a stray [ADVANCE_PHASE] marker leaks through — the model is no
-// longer instructed to emit it. Phases now change from the model's own [PHASE:] tag on each
-// response (see parsePhaseTag / applyPhaseFromText); there is no turn/time auto-advance or
-// manual "Next Phase" button anymore.
+// Defensive strip in case a stray [ADVANCE_PHASE] marker leaks through in the model's
+// response. Phases change based on the model's own [PHASE:] tag on each response (see
+// parsePhaseTag / applyPhaseFromText); there is no turn/time auto-advance or manual
+// "Next Phase" control.
 function stripAdvancePhase(text) { return text.replace(/\[ADVANCE_PHASE\]/gi, "").replace(/\n{3,}/g, "\n\n").trim(); }
 
 // Blended Incidents mode only: the facilitator prompt asks every response to open with a
@@ -2271,11 +2261,11 @@ function parseThreadTag(text) {
 }
 function stripThreadTag(text) { return (text || "").replace(/^\s*\[THREAD:(A|B|BOTH)\]/i, "").replace(/^\n+/, "").trim(); }
 
-// AI-driven phase tracking: with turn/time limits removed, the facilitator prompt asks every
-// response to open with a hidden [PHASE:<name>] marker naming the phase the team's current
-// actions place them in. parsePhaseTag maps it to an index in the playbook's phase list (exact
-// match first, then prefix, then substring, to tolerate light AI wording drift); stripPhaseTag
-// removes it before the text is ever shown — same never-leak contract as the markers above.
+// AI-driven phase tracking: the facilitator prompt asks every response to open with a
+// hidden [PHASE:<name>] marker naming the phase the team's current actions place them in.
+// parsePhaseTag maps it to an index in the playbook's phase list (exact match first, then
+// prefix, then substring, to tolerate light AI wording drift); stripPhaseTag removes it
+// before the text is ever shown — same never-leak contract as the markers above.
 function parsePhaseTag(text, phases) {
   const m = /^\s*\[PHASE:\s*([^\]]+)\]/i.exec(text || "");
   if (!m) return null;
@@ -2352,18 +2342,13 @@ const MultiRoleMessageGroup = memo(function MultiRoleMessageGroup({ msg }) {
 // A single chat bubble, extracted from AIChat's render loop and wrapped in React.memo so it
 // only re-renders when ITS OWN message data actually changes — not whenever an ancestor
 // re-renders for an unrelated reason (e.g. the per-second phase/scenario countdown ticking in
-// ExerciseView, which previously forced this entire list to be recreated every second). Takes
-// only plain data as props (no callbacks to go stale), so memoizing it carries no risk of the
-// stale-closure bugs a broader memoization of AIChat itself could introduce. Fixes reported
-// text-selection flicker: with the old inline rendering, this list's elements were torn down
-// and reconciled fresh every second even though their content was usually unchanged, which is
-// a well-known source of intermittent selection loss in React apps using
-// dangerouslySetInnerHTML — memoizing here removes that churn entirely for messages whose
-// content hasn't actually changed.
+// ExerciseView). Takes only plain data as props (no callbacks to go stale), so memoizing it
+// carries no risk of stale-closure bugs. Avoids tearing down and reconciling unchanged message
+// elements on every tick, which prevents intermittent text-selection loss in React apps using
+// dangerouslySetInnerHTML.
 // `incidentTags` (Blended Incidents mode only) carries { showIncidentTags, primary, secondary }
 // so this component can render a small "which incident" chip without needing the whole
-// session object — undefined/null in every non-blended session, in which case nothing here
-// changes from before.
+// session object — undefined/null in every non-blended session.
 const ChatMessage = memo(forwardRef(function ChatMessage({ msg, incidentTags }, ref) {
   const threadTag = msg.role === "ai" ? parseThreadTag(msg.text) : null;
   // Strip [OPTION_X], [ADVANCE_PHASE], [THREAD:X], and [PHASE:X] markers from every AI message
@@ -2400,14 +2385,11 @@ const ChatMessage = memo(forwardRef(function ChatMessage({ msg, incidentTags }, 
 }));
 
 function AIChat({ scenario, secondaryScenario, mysterySlot, showIncidentTags, phase, messages, onMessage, loading, participants, multiMode, onToggleMultiMode, onMultiSend, hideScenarioName, exerciseConcluded, onCompleteExercise }) {
-  // FIXED regression: this object literal was being recreated on every AIChat render (e.g.
-  // every second, from ExerciseView's phase/scenario countdown tick) and passed straight into
-  // memo()-wrapped ChatMessage as a prop. A fresh object reference every render defeats
-  // React.memo's shallow comparison, forcing every chat bubble to reconcile from scratch on
-  // every tick — reintroducing the exact text-selection flicker bug the ChatMessage/
-  // MultiRoleMessageGroup memoization was originally added to fix (see TEST_CHECKLIST.md §9).
-  // useMemo keeps the same object reference across renders whenever these specific values
-  // haven't actually changed.
+  // incidentTags must keep a stable object reference across renders whenever showIncidentTags/
+  // scenario/secondaryScenario/mysterySlot haven't changed, since it's passed into the
+  // memo()-wrapped ChatMessage/MultiRoleMessageGroup components — a fresh object reference on
+  // every render (e.g. on ExerciseView's per-second tick) would defeat React.memo's shallow
+  // comparison and force every chat bubble to reconcile from scratch each tick.
   const incidentTags = useMemo(
     () => secondaryScenario ? { showIncidentTags, primary: scenario, secondary: secondaryScenario, mysterySlot } : null,
     [secondaryScenario, showIncidentTags, scenario, mysterySlot]
@@ -2708,7 +2690,7 @@ function AARView({ session, timeline, messages, duration, onNewScenario }) {
     : "—";
 
   const responseCount = messages.reduce(
-    (acc, m) => m.role === "ai" ? acc : acc + (m.multi ? m.authors.length : 1), 0
+    (acc, m) => (m.role === "ai" || m.countsAsTurn === false) ? acc : acc + (m.multi ? m.authors.length : 1), 0
   );
 
   const generate = async () => {
@@ -2718,7 +2700,7 @@ function AARView({ session, timeline, messages, duration, onNewScenario }) {
       const log = messages.filter(m => m.role !== "ai").map(m =>
         m.multi
           ? m.authors.map(a => `${a.name || a.role} (${a.role}): ${a.text}`).join("\n")
-          : `${m.author || m.role}: ${m.text}`
+          : `${m.author || m.role}${m.countsAsTurn === false ? " (facilitation request, not a decision)" : ""}: ${m.text}`
       ).join("\n");
       const blendContext = session.secondaryScenario
         ? `\n\nBLENDED INCIDENTS: This session blended two scenarios into one feed — "${session.scenario.name}" and "${session.secondaryScenario.name}". The ACTUAL ground truth, which participants were never told directly during the exercise, is that the two incidents were ${session.blendRelation === "coordinated" ? "part of ONE coordinated attack" : "NOT actually connected — any apparent overlap was coincidental"}. Now that the exercise is over, reveal this plainly in a new "blendReveal" field, and assess how well the team recognized (or was misled by) the relationship between the two threads, and how well they prioritized/triaged across both.`
@@ -2736,12 +2718,18 @@ function AARView({ session, timeline, messages, duration, onNewScenario }) {
       // generated in this call, alongside the metrics) lands on a tier consistent with what
       // the app will separately calculate.
       const weightPct = (name) => Math.round(SCORE_METRIC_WEIGHTS[name] * 100);
-      const scoringContext = `\n\nSCORING SYSTEM: Populate a "scoreCard" that gamifies performance without losing rigor. Score five metrics 0-100 — "Detection & Triage", "Containment & Eradication", "Communication & Escalation", "Playbook Adherence" (vs ${session.playbook.name}), and "Decision Quality Under Pressure". Base every score on the SUBSTANCE and correctness of the team's own decisions and answers in the discussion log — never on whether they asked for a hint or requested multiple-choice options; those are normal facilitation aids and must not lower a score just for being used. Do NOT include an "overallScore" field — the app computes that deterministically from your 5 metric scores using fixed weights: Playbook Adherence ${weightPct("Playbook Adherence")}%, Decision Quality Under Pressure ${weightPct("Decision Quality Under Pressure")}%, Detection & Triage ${weightPct("Detection & Triage")}%, Containment & Eradication ${weightPct("Containment & Eradication")}%, Communication & Escalation ${weightPct("Communication & Escalation")}%. Mentally apply that same weighted formula to the 5 scores you just assigned, and award a short, earned "rank" title matching the resulting tier (roughly: 90+ confident/expert-sounding, 75-89 solid, 55-74 developing, below 55 foundational — invent a title that fits THIS team's actual run rather than reusing a stock phrase every time), so your rank stays consistent with the score the app will calculate. Add one "scoringNote" sentence stating plainly the score reflects decision quality, not hint/option usage. Then, for every "playbookGaps" item, attach a "linkedMetric" naming exactly one of the five scoreCard metric names above, so each gap ties back to the score it affected.`;
+      // Requires each metric to be scored low, with a summary explaining why, whenever the
+      // discussion log has no actions or statements relevant to that category.
+      const scoringContext = `\n\nSCORING SYSTEM: Populate a "scoreCard" that gamifies performance without losing rigor. Score five metrics 0-100 — "Detection & Triage", "Containment & Eradication", "Communication & Escalation", "Playbook Adherence" (vs ${session.playbook.name}), and "Decision Quality Under Pressure". Base every score on the SUBSTANCE and correctness of the team's own decisions and answers in the discussion log — never on whether they asked for a hint or requested multiple-choice options; those are normal facilitation aids and must not lower a score just for being used. If the discussion log contains no actions, decisions, or statements relevant to a given metric, you MUST score that metric low (0-20), and its "summary" must plainly state that no relevant actions were taken or discussed — never award partial, average, or implied credit for competence that was never actually demonstrated. Do NOT include an "overallScore" field — the app computes that deterministically from your 5 metric scores using fixed weights: Playbook Adherence ${weightPct("Playbook Adherence")}%, Decision Quality Under Pressure ${weightPct("Decision Quality Under Pressure")}%, Detection & Triage ${weightPct("Detection & Triage")}%, Containment & Eradication ${weightPct("Containment & Eradication")}%, Communication & Escalation ${weightPct("Communication & Escalation")}%. Mentally apply that same weighted formula to the 5 scores you just assigned, and award a short, earned "rank" title matching the resulting tier (roughly: 90+ confident/expert-sounding, 75-89 solid, 55-74 developing, below 55 foundational — invent a title that fits THIS team's actual run rather than reusing a stock phrase every time), so your rank stays consistent with the score the app will calculate. Add one "scoringNote" sentence stating plainly the score reflects decision quality, not hint/option usage. Then, for every "playbookGaps" item, attach a "linkedMetric" naming exactly one of the five scoreCard metric names above, so each gap ties back to the score it affected.`;
+      // Instructs the model to describe only what appears in the discussion log and to reuse
+      // the given Duration figure exactly as provided, in the same units.
+      const groundingContext = `\n\nGROUNDING RULES (must follow strictly): This report must describe ONLY what is actually present in the discussion log above — never invent, imply, or assume actions, decisions, or discussion that were not explicitly stated. If the log is empty, or a phase/category has no corresponding entries, say so plainly (e.g. "No containment actions were discussed or taken during this session") instead of describing hypothetical, typical, or "realistic template" behavior. Use the Duration value given above EXACTLY as written — same figure, same units — anywhere duration is mentioned (e.g. the executive summary); do not round it, convert it, or restate it differently. Log entries marked "(facilitation request, not a decision)" are the team asking for a hint or for multiple-choice options — these are NOT team responses, actions, or decisions: never count them toward, or describe them as, the number of responses/actions the team took. When describing a decision made by selecting a lettered option, describe the substance of what was chosen, not its letter (e.g. describe the action itself rather than writing "selected option B"). If the exercise was ended early with minimal or no discussion, state that plainly and briefly (e.g. "The exercise was ended early after minimal discussion.") rather than elaborating at length on the sparse content available.`;
       const resp = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: "claude-sonnet-4-6", max_tokens: 4000,
-          system: `You are a cybersecurity tabletop exercise facilitator writing a professional After-Action Report. Respond ONLY with a single valid JSON object — no markdown code fences, no commentary before or after, no trailing text. The entire response must be parseable by JSON.parse().`,
+          // Instructs the model to stay strictly factual and grounded in the provided data.
+          system: `You are a cybersecurity tabletop exercise facilitator writing a professional After-Action Report. Be strictly factual and grounded in the discussion log provided — never fabricate, embellish, or imply actions, decisions, or outcomes that did not actually occur, and never restate a given figure (such as Duration) in different units or rounded form. Respond ONLY with a single valid JSON object — no markdown code fences, no commentary before or after, no trailing text. The entire response must be parseable by JSON.parse().`,
           messages: [{ role: "user", content: `Generate an AAR for this tabletop exercise.
 
 Scenario: ${scenarioLabel(session)}
@@ -2749,11 +2737,11 @@ Playbook: ${session.playbook.name}
 Duration: ${fmt(duration)}
 Participants: ${session.participants.map(p => `${p.name || p.role} (${p.role})`).join(", ")}
 Facilitator tone: ${session.facilitatorConfig.tone}, difficulty: ${session.facilitatorConfig.difficulty}
-Discussion log: ${log || "(No discussion captured — generate a realistic template AAR.)"}${blendContext}${postExerciseContext}${scoringContext}
+Discussion log: ${log || "(No discussion was captured. No participant actions, decisions, or messages were recorded during this session — the report must state this plainly rather than inventing a plausible-sounding run.)"}${blendContext}${postExerciseContext}${groundingContext}${scoringContext}
 
 Return this exact JSON shape with no other text:
 {
-  "executiveSummary": "3-4 sentence paragraph summarizing the exercise and key outcomes",
+  "executiveSummary": "3-4 sentence paragraph summarizing the exercise and key outcomes; if engagement was minimal or the exercise ended early, keep this to 1-2 plain sentences stating that instead of elaborating",
   "scoreCard": {
     "rank": "short earned title reflecting this run",
     "metrics": [
@@ -3549,9 +3537,9 @@ function useChatStorage(session) {
   //
   // `scenarioElapsedSec` is a plain duration — the exact elapsed seconds at save time — that
   // only accrues while the exercise view is mounted, so resuming freezes the clock while away
-  // rather than continuing to drain it in the background. (Turn counts and per-phase time
-  // countdowns were removed when phase advancement became AI-driven, so they're no longer
-  // persisted; `phaseIdx` alone captures where the AI last placed the exercise.)
+  // rather than continuing to drain it in the background. Turn counts and per-phase time
+  // countdowns are not persisted; `phaseIdx` alone captures where the AI last placed the
+  // exercise, since phase advancement is AI-driven.
   const save = (messages, timeline, phaseIdx, session, scenarioElapsedSec, liveFacilitatorConfig) => {
     try {
       localStorage.setItem(key, JSON.stringify({
@@ -3649,14 +3637,13 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
 
   const [phaseIdx, setPhaseIdx] = useState(0);
   // scenarioElapsedSec is tracked as a plain elapsed DURATION in state, not derived from a
-  // fixed start timestamp compared against wall-clock "now". With timestamp math, closing the
-  // browser — or simply sitting on the Resume/"Start New Exercise" selector screen deciding
-  // whether to continue — silently burned real minutes off the budget, even though the team
-  // wasn't actually working the incident. Tracking duration directly means it only accrues
+  // fixed start timestamp compared against wall-clock "now" — this ensures time only accrues
   // while THIS component is mounted (see the ticking effect below), freezing the instant the
-  // exercise view unmounts. It drives the Topbar's live timer, the AAR duration, and the
-  // optional whole-scenario budget warning. (Turn counts and per-phase countdowns were removed
-  // when phase advancement became AI-driven — see applyPhaseFromText.)
+  // exercise view unmounts, regardless of how long the browser stays closed or how long
+  // someone spends on the Resume/"Start New Exercise" selector screen. It drives the Topbar's
+  // live timer, the AAR duration, and the optional whole-scenario budget warning. Turn counts
+  // and per-phase countdowns are not tracked, since phase advancement is AI-driven — see
+  // applyPhaseFromText.
   const [scenarioElapsedSec, setScenarioElapsedSec] = useState(0);
   // Gates the onElapsedChange lift effect until the mount/resume-restore effect's OWN state
   // updates have committed and re-rendered, so it never reports a transient pre-restore value.
@@ -3740,11 +3727,12 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
       const r = session._resumeData;
       setMessages(r.messages || []);
       setTimeline(r.timeline || [{ label: "Session resumed", detail: scenarioLabel(session), time: new Date().toLocaleTimeString() }]);
-      // Clamp to the current phase list: a session saved on a phase that was later removed
-      // (e.g. NIST's old "Identify Improvement") would otherwise restore an out-of-range index.
+      // Clamp to the current phase list: a saved session referencing a phase index outside
+      // the current playbook's phase list would otherwise restore an out-of-range index.
       setPhaseIdx(Math.min(r.phaseIdx || 0, phases.length - 1));
-      // scenarioElapsedSec restore: current format stores the exact elapsed duration; a
-      // pre-duration-rework session only had a wall-clock start timestamp, migrated once here.
+      // scenarioElapsedSec restore: the current save format stores the exact elapsed duration
+      // directly; older saved sessions only have a wall-clock start timestamp, which is
+      // migrated here.
       if (typeof r.scenarioElapsedSec === "number") {
         setScenarioElapsedSec(r.scenarioElapsedSec);
       } else if (typeof r.scenarioStartedAt === "number") {
@@ -3852,7 +3840,7 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
   const sendMessage = async (userText, countsAsTurn = true) => {
     const participant = session.participants[0];
     const author = participant?.name || participant?.role || "Participant";
-    const userMsg = { role: "user", author, text: userText, time: new Date().toLocaleTimeString() };
+    const userMsg = { role: "user", author, text: userText, time: new Date().toLocaleTimeString(), countsAsTurn };
     const updatedMessages = [...messages, userMsg];
     setMessages(updatedMessages);
     setTimeline(prev => [...prev, { label: `${author} responded`, detail: userText.slice(0, 70) + (userText.length > 70 ? "…" : ""), time: new Date().toLocaleTimeString() }]);
@@ -4127,7 +4115,7 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
         <ConfirmModal
           icon="⚠️"
           title="End this exercise early?"
-          body={`You're currently in the ${currentPhase} phase with ${messages.reduce((acc, m) => m.role === "ai" ? acc : acc + (m.multi ? m.authors.length : 1), 0)} responses logged. Ending early will stop the exercise and take you to the After-Action Report. This cannot be undone.`}
+          body={`You're currently in the ${currentPhase} phase with ${messages.reduce((acc, m) => (m.role === "ai" || m.countsAsTurn === false) ? acc : acc + (m.multi ? m.authors.length : 1), 0)} responses logged. Ending early will stop the exercise and take you to the After-Action Report. This cannot be undone.`}
           confirmLabel="End Exercise"
           confirmStyle={{ background: "rgba(220,38,38,0.2)", color: "#f87171", border: "1px solid rgba(220,38,38,0.4)" }}
           onConfirm={() => {
@@ -4169,16 +4157,11 @@ export default function App() {
   const [savedSession, setSavedSession] = useState(null); // active unfinished session found in localStorage
   const [lastPlayed, setLastPlayed] = useState(null);     // most recently completed scenario
   // "Total session time" shown live in the Topbar and recorded as the AAR's final duration.
-  // This used to be tracked independently here via a `startTimeRef` timestamp (reset to
-  // Date.now() on every resume, same bug class as the phase/scenario countdowns) AND,
-  // separately, AGAIN inside Topbar itself via its own private timer — two more timestamp
-  // clocks with no persistence, on top of the ones already fixed in ExerciseView. Rather
-  // than patch a third one, this now receives live updates from ExerciseView's own
-  // scenarioElapsedSec (see its onElapsedChange callback) — the same already-correct,
-  // already-persisted duration ExerciseView tracks for the Entire-Scenario time-limit
-  // feature, which ticks only while the exercise is actually mounted and resumes from
-  // exactly where it left off. There is deliberately no local ticking interval here anymore;
-  // this value simply mirrors whatever ExerciseView last reported.
+  // Receives live updates from ExerciseView's own scenarioElapsedSec (see its
+  // onElapsedChange callback) — the same duration ExerciseView tracks for the
+  // Entire-Scenario time-limit feature, which ticks only while the exercise is actually
+  // mounted and resumes from exactly where it left off. There is no local ticking interval
+  // here; this value simply mirrors whatever ExerciseView last reported.
   const [elapsedSec, setElapsedSec] = useState(0);
 
   // Load lastPlayed on mount — always show it on scenario selection
