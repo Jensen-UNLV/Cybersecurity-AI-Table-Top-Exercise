@@ -13,8 +13,8 @@ const SCENARIOS = [
 const INDUSTRY_PLAYBOOKS = [
   {
     id: "cisa", name: "CISA Incident Response", type: "industry",
-    description: "A six-phase incident response lifecycle from the Cybersecurity and Infrastructure Security Agency for detecting, containing, and recovering from a security incident.",
-    phases: ["Preparation", "Detection & Analysis", "Containment", "Eradication", "Recovery", "Post-Incident"],
+    description: "A four-phase live incident response lifecycle from the Cybersecurity and Infrastructure Security Agency covering the active handling of a security incident: detection and analysis, containment, eradication, and recovery.",
+    phases: ["Detection & Analysis", "Containment", "Eradication", "Recovery"],
   },
   {
     id: "nist", name: "NIST SP 800-61", type: "industry",
@@ -63,7 +63,7 @@ function computeOverallScore(metrics) {
 // Facilitator-facing "Phase Focus" hint text, keyed by phase NAME rather than index, so it
 // stays correct regardless of which playbook (and therefore which phase list/order) is
 // active — e.g. NIST's live exercise phases (Detect/Respond/Recover) don't line up
-// positionally with CISA's six-phase list. See ExerciseView's `phaseGuidance`.
+// positionally with CISA's four-phase list. See ExerciseView's `phaseGuidance`.
 const PHASE_GUIDANCE = {
   "Preparation": "Confirm roles, channels, and tools. Ensure the playbook is accessible.",
   "Detection & Analysis": "Identify indicators of compromise. Classify severity. Notify stakeholders. Preserve evidence.",
@@ -3655,7 +3655,7 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
   const playbook = session.playbook;
   const phases = playbook.phases?.length
     ? playbook.phases
-    : ["Preparation", "Detection & Analysis", "Containment", "Eradication", "Recovery", "Post-Incident"];
+    : ["Detection & Analysis", "Containment", "Eradication", "Recovery"];
 
   const [phaseIdx, setPhaseIdx] = useState(0);
   // scenarioElapsedSec is tracked as a plain elapsed DURATION in state, not derived from a
@@ -3686,7 +3686,7 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
   const storage = useChatStorage(session);
 
   // Stop any in-progress "Read Aloud" narration the moment this view unmounts — covers
-  // End Early, Complete Exercise, and any future navigation-away path from the exercise.
+  // Complete Exercise and any future navigation-away path from the exercise.
   // window.speechSynthesis is a browser-global API, not tied to VoiceButton's own local
   // `speaking` state, so simply unmounting VoiceButton does NOT stop it on its own —
   // without this, narration that was playing when the exercise ended kept speaking right
@@ -3928,12 +3928,6 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
             <button key={id} className={`nav-tab${tab === id ? " active" : ""}`} onClick={() => { setTab(id); window.scrollTo({ top: 0, behavior: "instant" }); }}>{label}</button>
           ))}
           <div style={{ flex: 1 }} />
-          {/* End Early — always visible */}
-          <button
-            className="btn btn-ghost btn-sm"
-            style={{ margin: "8px 6px 8px 0", color: "#f87171", borderColor: "rgba(220,38,38,0.3)" }}
-            onClick={() => setConfirmModal("end-early")}
-          >✕ End Early</button>
           {/* Complete Exercise — always available; phases advance automatically as the AI
               reads the scenario state, so there is no manual "Next Phase" control. */}
           <button className="btn btn-success btn-sm" style={{ margin: "8px 0" }} onClick={() => setConfirmModal("complete")}>Complete Exercise ✓</button>
@@ -4133,23 +4127,6 @@ function ExerciseView({ session, onEnd, onElapsedChange }) {
       </div>
 
       {/* ── Confirmation modals ── */}
-      {confirmModal === "end-early" && (
-        <ConfirmModal
-          icon="⚠️"
-          title="End this exercise early?"
-          body={`You're currently in the ${currentPhase} phase with ${messages.reduce((acc, m) => (m.role === "ai" || m.countsAsTurn === false) ? acc : acc + (m.multi ? m.authors.length : 1), 0)} responses logged. Ending early will stop the exercise and take you to the After-Action Report. This cannot be undone.`}
-          confirmLabel="End Exercise"
-          confirmStyle={{ background: "rgba(220,38,38,0.2)", color: "#f87171", border: "1px solid rgba(220,38,38,0.4)" }}
-          onConfirm={() => {
-            setConfirmModal(null);
-            speech.stop(); // stop narration immediately — don't wait for the ExerciseView unmount cleanup
-            lastPlayedStorage.save(session.scenario, session.playbook, session.sessionName);
-            storage.clear();
-            onEnd(messages, timeline);
-          }}
-          onCancel={() => setConfirmModal(null)}
-        />
-      )}
       {confirmModal === "complete" && (
         <ConfirmModal
           icon="✅"
