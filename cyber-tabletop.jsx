@@ -2464,7 +2464,7 @@ function AIChat({ scenario, secondaryScenario, mysterySlot, showIncidentTags, ph
     setOptionsRequested(false);
     setSelectedOption(null);
     window.scrollTo({ top: 0, behavior: "smooth" });
-    send(`${selectedOption.label}: ${selectedOption.text}`); // the team's chosen action — counts toward the turn limit
+    send(selectedOption.text); // send the selected option's action text as the team's response (counts toward the turn, same as a typed answer)
   };
 
   const handleHint = () => {
