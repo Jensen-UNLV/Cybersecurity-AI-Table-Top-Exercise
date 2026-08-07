@@ -1259,9 +1259,9 @@ CORE BEHAVIOR:
 - MANDATORY: end EVERY response with a single short line on its own that invites action, e.g. "What is your team's next action?" or "How does your team respond?" or "The clock is ticking — what do you do?" Vary the phrasing; never repeat the same closing line twice in a row. This is the one place where inviting the team to act is not "leading" them — it is required scaffolding, not a suggestion of what to do. The sole exception is the very first opening scene-setting message, whose own instructions explicitly say not to ask a question — follow that instruction as written for that one message only; every response after it still needs this closing line.
 
 HINT MODE:
-- If a participant explicitly asks for a hint, help, direction, or says they are stuck, briefly shift into hint mode: acknowledge the request, then offer one directional nudge grounded in ${playbook.name} — not the answer, just a pointer toward the right area of thinking. Return to observer mode immediately after.
+- If a participant explicitly asks for a hint, help, direction, or says they are stuck, briefly shift into hint mode and offer one directional nudge grounded in ${playbook.name} — not the answer, just a pointer toward the right area of thinking. Do not open with an acknowledging or lead-in sentence before the nudge. Return to observer mode immediately after.
 - Example hint format: "Your ${playbook.name} playbook's ${phase} guidance focuses on [area] — has the team addressed that yet?"
-- If a participant asks for multiple choice options, respond with a single short sentence acknowledging the request (e.g. "Here are your options — choose your team's next action." or "Select the action your team will take."), then immediately follow with the option lines and nothing else. Include 4 options total: 2-3 that are appropriate for the current phase, and 1-2 that are plausible-sounding but either belong to a different phase, are premature, or are common actions in other incident types. Do not indicate which options are correct. Do NOT write the options as plain text, numbered lists, or lettered lists anywhere in your response — ONLY use the [OPTION_X] format below, as the app renders these as buttons and any plain-text repetition will be shown to the user as duplicate content. Format each option on its own line exactly like this:
+- If a participant asks for multiple choice options, respond with ONLY the option lines and nothing else — no acknowledging sentence, lead-in, or introductory line of any kind before them. Include 4 options total: 2-3 that are appropriate for the current phase, and 1-2 that are plausible-sounding but either belong to a different phase, are premature, or are common actions in other incident types. Do not indicate which options are correct. Do NOT write the options as plain text, numbered lists, or lettered lists anywhere in your response — ONLY use the [OPTION_X] format below, as the app renders these as buttons and any plain-text repetition will be shown to the user as duplicate content. Format each option on its own line exactly like this:
   [OPTION_A] Brief action description
   [OPTION_B] Brief action description
   [OPTION_C] Brief action description
@@ -2229,6 +2229,28 @@ function parseOptions(text) {
   return matches.map(m => ({ label: m[1], text: m[2].trim() }));
 }
 
+// Deterministically reshuffles parsed options and reassigns A/B/C/D labels based on the
+// new order, seeded from the message text itself. This keeps the displayed order stable
+// across re-renders of the same message (e.g. clicking to select an option) while varying
+// it from one AI message to the next, so option position carries no positional signal.
+function shuffleOptions(options, seedText) {
+  let seed = 5381;
+  for (let i = 0; i < seedText.length; i++) seed = ((seed * 33) ^ seedText.charCodeAt(i)) >>> 0;
+  const rand = () => {
+    seed ^= seed << 13; seed >>>= 0;
+    seed ^= seed >>> 17;
+    seed ^= seed << 5; seed >>>= 0;
+    return seed / 4294967296;
+  };
+  const shuffled = [...options];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  const letters = ["A", "B", "C", "D"];
+  return shuffled.map((opt, i) => ({ ...opt, label: letters[i] }));
+}
+
 // Strip [OPTION_X] lines from displayed text, and catch any plain-text
 // lettered list items Claude may produce as a fallback (A: ..., B: ..., etc.)
 function stripOptions(text) {
@@ -2413,7 +2435,7 @@ function AIChat({ scenario, secondaryScenario, mysterySlot, showIncidentTags, ph
   // Derive these before effects so they're in scope
   const lastMsg = messages.length > 0 ? messages[messages.length - 1] : null;
   const isLastAI = lastMsg?.role === "ai";
-  const currentOptions = (optionsRequested && isLastAI) ? parseOptions(lastMsg.text) : [];
+  const currentOptions = (optionsRequested && isLastAI) ? shuffleOptions(parseOptions(lastMsg.text), lastMsg.text) : [];
   const showOptions = currentOptions.length > 0;
 
   // When a new AI message arrives, scroll its top into view inside the chat area
